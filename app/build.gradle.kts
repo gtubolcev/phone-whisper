@@ -17,6 +17,24 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    signingConfigs {
+        create("stableDebug") {
+            storeFile = file("debug-signing.p12")
+            storePassword = "phone-whisper-debug"
+            keyAlias = "phonewhisperdebug"
+            keyPassword = "phone-whisper-debug"
+            storeType = "pkcs12"
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".openai"
+            versionNameSuffix = "-openai"
+            signingConfig = signingConfigs.getByName("stableDebug")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
