@@ -23,6 +23,26 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".MicPermissionActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".WhisperImeService"
+            android:exported="true"
+            android:label="@string/ime_label"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/ime_config" />
+        </service>
+
         <service
             android:name=".WhisperAccessibilityService"
             android:exported="false"

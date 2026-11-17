@@ -12,6 +12,7 @@ import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -26,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusSubtitle: TextView
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
+    private lateinit var imeRowSub: TextView
     private lateinit var cloudConfigContainer: LinearLayout
     private lateinit var cleanupConfigContainer: LinearLayout
     private lateinit var transcriptionKeyRowSub: TextView
@@ -83,7 +85,17 @@ class MainActivity : AppCompatActivity() {
         audioRowSub = audioRow.findViewWithTag("subtitle")
         root.addView(audioRow)
 
-        val accRow = settingsRow("Accessibility service", "Checking...") {
+        val imeRow = settingsRow("Voice keyboard", "Checking...") {
+            if (isImeEnabled()) {
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+            } else {
+                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            }
+        }
+        imeRowSub = imeRow.findViewWithTag("subtitle")
+        root.addView(imeRow)
+
+        val accRow = settingsRow("Accessibility service (floating button)", "Checking...") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
         accRowSub = accRow.findViewWithTag("subtitle")
@@ -149,7 +161,7 @@ class MainActivity : AppCompatActivity() {
             val newVal = !greedySwitch.isChecked
             prefs().edit().putBoolean("greedy_decoding", newVal).apply()
             greedySwitch.isChecked = newVal
-            WhisperAccessibilityService.instance?.reloadModel()
+            DictationEngine.reloadModel()
         })
         root.addView(modelContainer)
 
@@ -309,7 +321,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun selectModel(archive: String) {
         prefs().edit().putString("model_name", archive).apply()
-        WhisperAccessibilityService.instance?.reloadModel()
+        DictationEngine.reloadModel()
         refreshAllCards(); refresh()
     }
 
@@ -380,7 +392,9 @@ class MainActivity : AppCompatActivity() {
         val hasModel = LocalTranscriber.availableModels(this).isNotEmpty()
 
         audioRowSub.text = if (audio) "Granted" else "Tap to grant permission"
-        accRowSub.text = if (acc) "Enabled" else "Tap to enable in settings"
+        val ime = isImeEnabled()
+        accRowSub.text = if (acc) "Enabled" else "Optional — tap to enable in settings"
+        imeRowSub.text = if (ime) "Enabled — tap to switch keyboards" else "Tap to enable in keyboard settings"
 
         modelContainer.visibility = if (useLocal) View.VISIBLE else View.GONE
         cloudConfigContainer.visibility = if (useLocal) View.GONE else View.VISIBLE
@@ -414,9 +428,14 @@ class MainActivity : AppCompatActivity() {
         val localReady = useLocal && hasModel
         val cloudReady = !useLocal && hasTranscriptionKey
         val postReady = !usePostProcessing || hasCleanupKey
-        val ready = audio && acc && (localReady || cloudReady) && postReady
+        val ready = audio && (acc || ime) && (localReady || cloudReady) && postReady
 
-        statusSubtitle.text = if (ready) "Ready — tap the overlay dot to dictate" else "Setup required"
+        statusSubtitle.text = when {
+            !ready -> "Setup required"
+            ime && acc -> "Ready — use the voice keyboard or the overlay dot"
+            ime -> "Ready — switch to the Phone Whisper voice keyboard to dictate"
+            else -> "Ready — tap the overlay dot to dictate"
+        }
         statusSubtitle.setTextColor(if (ready) attrColor(com.google.android.material.R.attr.colorPrimary) else attrColor(android.R.attr.textColorSecondary))
         
         refreshAllCards()
@@ -630,6 +649,10 @@ class MainActivity : AppCompatActivity() {
         return color
     }
     private fun prefs() = getSharedPreferences("phonewhisper", MODE_PRIVATE)
+    private fun isImeEnabled(): Boolean =
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).enabledInputMethodList.any {
+            it.packageName == packageName && it.serviceName == WhisperImeService::class.java.name
+        }
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     companion object {

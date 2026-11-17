@@ -14,6 +14,21 @@ Old way: one hardcoded OpenAI-shaped path. Very limited. Sad.
 
 New way: transcription provider here, cleanup provider there, keys stay yours, models come from the endpoint. Strong architecture. Many people are saying this.
 
+## Voice keyboard
+
+No accessibility service needed: enable **Phone Whisper voice** in Android keyboard settings (or from the app's Setup section) and switch to it in any text field. Bank apps that block accessibility services stay happy.
+
+- **Mic** in the middle: tap to start, tap to stop. Text goes in through the normal keyboard channel, with smart spacing and capitalization.
+- **Smart punctuation** `, . ? !`: replaces the mark the recognizer guessed ("Ты придёшь." + `?` → "Ты придёшь?"). Press two marks in a row to stack them (`?!`, `...`).
+- **Fix a word**: the last phrase appears as tappable words above the mic. Tap one to select it, then:
+  - **✨ Suggestions** — the cleanup LLM proposes what you probably said (uses the Post-Processing provider and key);
+  - **🎤 Again** — re-dictate just that word;
+  - **Aa** — flip capitalization; **Delete**; **⌨ Type** — jump to your regular keyboard with the word selected.
+- **← →** move by word, **⌫ word** deletes a word, ⌫ and arrows repeat when held.
+- Keyboard key: tap to return to your previous keyboard, hold for the list.
+
+The keyboard and the floating button share one dictation engine, so the local model is loaded once.
+
 ## Install
 
 Use the side-by-side debug build from [Releases](https://github.com/ivkiwi/phone-whisper/releases/tag/openai-compatible-providers-side-by-side-2026-06-29).
