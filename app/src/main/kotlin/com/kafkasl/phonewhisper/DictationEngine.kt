@@ -34,6 +34,10 @@ object DictationEngine {
         fun onLevel(level: Float) {}
         fun onResult(text: String, notice: Notice)
         fun onError(message: String)
+        /** Live mode only: the unfinished current segment changed. */
+        fun onLivePartial(text: String) {}
+        /** Live mode only: a segment is final; [forced] after [cutSegment]. */
+        fun onLiveSegment(text: String, forced: Boolean) {}
     }
 
     const val SAMPLE_RATE = 16000
@@ -49,6 +53,14 @@ object DictationEngine {
     /** Bumped on every start/cancel so callbacks from an abandoned utterance are dropped. */
     @Volatile private var generation = 0
     private var allowCleanup = true
+
+    /**
+     * True while the current utterance streams text live (streaming model loaded and the
+     * owner asked for it). Live results skip cleanup here: the owner already typed the
+     * segments and runs [cleanup] on what is actually in the editor.
+     */
+    @Volatile var isLive = false
+        private set
 
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
@@ -157,7 +169,7 @@ object DictationEngine {
      * Start capturing for [owner]. With [cleanup] false the transcript skips post-processing
      * (used when re-dictating a single word).
      */
-    fun start(owner: Listener, cleanup: Boolean = true): StartResult {
+    fun start(owner: Listener, cleanup: Boolean = true, live: Boolean = false): StartResult {
         if (state != State.IDLE) return StartResult.BUSY
         val context = ctx()
         val useLocal = prefs().getBoolean("use_local", true)
@@ -195,14 +207,17 @@ object DictationEngine {
 
         val gen = ++generation
         listener = owner
-        allowCleanup = cleanup
         audioRecord = record
         pcmStream = ByteArrayOutputStream()
         // If a streaming model is already loaded, decode incrementally while recording so
         // the result is ready almost instantly on stop. Otherwise fall back to one-shot.
         val local = localTranscriber
-        streamSession = if (useLocal && local != null && local.isStreaming)
-            local.newStreamingSession(SAMPLE_RATE) else null
+        val streaming = useLocal && local != null && local.isStreaming
+        isLive = live && streaming
+        allowCleanup = cleanup && !isLive
+        streamSession = if (streaming) local!!.newStreamingSession(
+            SAMPLE_RATE, if (isLive) liveUpdates(gen) else null
+        ) else null
 
         state = State.RECORDING
         owner.onStateChanged(State.RECORDING)
@@ -220,6 +235,24 @@ object DictationEngine {
             }
         }
         return StartResult.STARTED
+    }
+
+    private fun liveUpdates(gen: Int) = object : LocalTranscriber.StreamingSession.UpdateListener {
+        override fun onPartial(text: String) {
+            handler.post { if (generation == gen) listener?.onLivePartial(text) }
+        }
+
+        override fun onSegment(text: String, forced: Boolean) {
+            handler.post { if (generation == gen) listener?.onLiveSegment(text, forced) }
+        }
+    }
+
+    /** Live mode: finalize the segment being spoken now. Answered by onLiveSegment(forced = true). */
+    fun cutSegment(): Boolean {
+        if (!isLive || state != State.RECORDING) return false
+        val session = streamSession ?: return false
+        session.cut()
+        return true
     }
 
     fun stopAndTranscribe() {
@@ -266,6 +299,7 @@ object DictationEngine {
         streamSession = null
         pcmStream = null
         listener = null
+        isLive = false
         state = State.IDLE
         owner.onStateChanged(State.IDLE)
     }
@@ -334,13 +368,21 @@ object DictationEngine {
         scheduleModelRelease()
         if (text.isNullOrBlank()) { fail(gen, "No speech detected"); return }
 
+        if (!allowCleanup) { succeed(gen, text, Notice.NONE); return }
+        cleanup(text) { cleaned, notice -> succeed(gen, cleaned, notice) }
+    }
+
+    fun isCleanupEnabled(): Boolean = prefs().getBoolean("use_post_processing", false)
+
+    /**
+     * Run the configured cleanup on [text]; the callback gets the cleaned text (or the
+     * original plus a notice) on a background thread. No-op when cleanup is disabled.
+     */
+    fun cleanup(text: String, callback: (String, Notice) -> Unit) {
         val prefs = prefs()
-        if (!allowCleanup || !prefs.getBoolean("use_post_processing", false)) {
-            succeed(gen, text, Notice.NONE)
-            return
-        }
+        if (!prefs.getBoolean("use_post_processing", false)) { callback(text, Notice.NONE); return }
         val apiKey = OpenAiCompatibleApi.apiKey(prefs, OpenAiCompatibleApi.CLEANUP_API_KEY_PREF)
-        if (apiKey.isBlank()) { succeed(gen, text, Notice.CLEANUP_NO_KEY); return }
+        if (apiKey.isBlank()) { callback(text, Notice.CLEANUP_NO_KEY); return }
 
         val apiBaseUrl = OpenAiCompatibleApi.apiBaseUrl(prefs, OpenAiCompatibleApi.CLEANUP_API_BASE_URL_PREF)
         val model = OpenAiCompatibleApi.model(
@@ -348,8 +390,8 @@ object DictationEngine {
         )
         val prompt = prefs.getString("post_processing_prompt", PostProcessor.DEFAULT_PROMPT) ?: PostProcessor.DEFAULT_PROMPT
         PostProcessor.process(text, prompt, apiKey, apiBaseUrl, model) { result ->
-            if (!result.text.isNullOrBlank()) succeed(gen, result.text, Notice.NONE)
-            else succeed(gen, text, Notice.CLEANUP_FAILED)
+            if (!result.text.isNullOrBlank()) callback(result.text, Notice.NONE)
+            else callback(text, Notice.CLEANUP_FAILED)
         }
     }
 
@@ -365,6 +407,7 @@ object DictationEngine {
             if (gen != generation) return@post
             val l = listener
             listener = null
+            isLive = false
             state = State.IDLE
             l?.onStateChanged(State.IDLE)
             l?.let(deliver)

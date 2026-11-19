@@ -63,6 +63,19 @@ class WhisperImeService : InputMethodService() {
     private var notice: String? = null
     private var lastKeyWasPunct = false
 
+    // --- Live streaming dictation ---
+    /** Text is being typed live while the user speaks (streaming model). */
+    private var liveActive = false
+    /** Absolute cursor position where the live dictation started. */
+    private var liveStart = -1
+    /** Everything typed into the editor during this live dictation (segments + punctuation). */
+    private val liveText = StringBuilder()
+    /** Editor context captured when the current segment started (composing text excluded). */
+    private var segBefore: CharSequence? = null
+    private var segAfter: CharSequence? = null
+    /** Punctuation pressed mid-dictation, applied once the cut segment arrives. */
+    private val pendingPunct = mutableListOf<Char>()
+
     // --- Palette (day / night) ---
     private var night = false
     private val panelBg get() = if (night) 0xFF16181C.toInt() else 0xFFE6E9EF.toInt()
@@ -95,8 +108,13 @@ class WhisperImeService : InputMethodService() {
 
         override fun onError(message: String) {
             replaceTarget = null
+            if (liveActive) finishLive()
             showNotice(message)
         }
+
+        override fun onLivePartial(text: String) = livePartial(text)
+
+        override fun onLiveSegment(text: String, forced: Boolean) = liveSegment(text)
     }
 
     // --- Lifecycle ---
@@ -132,6 +150,11 @@ class WhisperImeService : InputMethodService() {
         // Never type a late result into whatever field gets focus next.
         DictationEngine.cancel(listener)
         replaceTarget = null
+        if (liveActive) {
+            currentInputConnection?.finishComposingText()
+            liveActive = false
+            pendingPunct.clear()
+        }
         super.onFinishInputView(finishingInput)
     }
 
@@ -256,8 +279,20 @@ class WhisperImeService : InputMethodService() {
     private fun startDictation(target: Int?) {
         notice = null
         replaceTarget = target
-        when (DictationEngine.start(listener, cleanup = target == null)) {
-            DictationEngine.StartResult.STARTED -> {}
+        // Live typing only for normal dictation; a re-dictated word is replaced in one go.
+        when (DictationEngine.start(listener, cleanup = target == null, live = target == null)) {
+            DictationEngine.StartResult.STARTED -> {
+                liveActive = DictationEngine.isLive
+                if (liveActive) {
+                    if (selectedWord != null) deselectWord()
+                    liveStart = minOf(selStart, selEnd)
+                    liveText.setLength(0)
+                    segBefore = null
+                    segAfter = null
+                    pendingPunct.clear()
+                    lastKeyWasPunct = false
+                }
+            }
             DictationEngine.StartResult.NO_PERMISSION -> {
                 replaceTarget = null
                 showNotice(getString(R.string.ime_grant_mic))
@@ -275,6 +310,11 @@ class WhisperImeService : InputMethodService() {
     }
 
     private fun onDictationResult(text: String, result: DictationEngine.Notice) {
+        if (liveActive) {
+            finishLive()
+            cleanupLivePhrase()
+            return
+        }
         val target = replaceTarget
         replaceTarget = null
         val p = phrase
@@ -338,6 +378,7 @@ class WhisperImeService : InputMethodService() {
     }
 
     private fun selectWord(index: Int) {
+        if (liveActive) return
         val ic = currentInputConnection ?: return
         val p = phrase ?: return
         val base = locatePhrase(ic, p) ?: return phraseLost()
@@ -454,9 +495,23 @@ class WhisperImeService : InputMethodService() {
     // --- Keys ---
 
     private fun punctuate(mark: Char) {
-        val ic = currentInputConnection ?: return
+        if (liveActive) {
+            // Finalize what is being said right now, then place the mark after it.
+            pendingPunct.add(mark)
+            // While the tail is still decoding, the final segment will flush the marks.
+            if (!DictationEngine.cutSegment() && ownerState() != DictationEngine.State.TRANSCRIBING) {
+                flushPendingPunct()
+            }
+            return
+        }
         if (selectedWord != null) deselectWord()
         notice = null
+        applyPunct(mark)
+        renderStrip()
+    }
+
+    private fun applyPunct(mark: Char) {
+        val ic = currentInputConnection ?: return
         ic.beginBatchEdit()
         val before = ic.getTextBeforeCursor(32, 0) ?: ""
         val after = ic.getTextAfterCursor(1, 0) ?: ""
@@ -465,15 +520,114 @@ class WhisperImeService : InputMethodService() {
         ic.commitText(edit.insert, 1)
         ic.endBatchEdit()
         lastKeyWasPunct = true
+        if (liveActive) {
+            liveText.setLength(maxOf(0, liveText.length - edit.deleteBefore))
+            liveText.append(edit.insert)
+        }
+    }
+
+    private fun flushPendingPunct() {
+        val marks = pendingPunct.toList()
+        pendingPunct.clear()
+        marks.forEach { applyPunct(it) }
+    }
+
+    // --- Live streaming ---
+
+    private fun captureSegmentContext(ic: InputConnection) {
+        if (segBefore != null) return
+        segBefore = ic.getTextBeforeCursor(64, 0) ?: ""
+        segAfter = ic.getTextAfterCursor(16, 0) ?: ""
+    }
+
+    /** Show the unfinished segment as composing (underlined) text; it may still change. */
+    private fun livePartial(text: String) {
+        if (!liveActive) return
+        val ic = currentInputConnection ?: return
+        captureSegmentContext(ic)
+        val d = TextEditing.prepareDictation(text, segBefore!!, segAfter!!)
+        ic.setComposingText(d.insert, 1)
+    }
+
+    /** Commit a finished segment in place of the composing text, then any pending punctuation. */
+    private fun liveSegment(text: String) {
+        if (!liveActive) return
+        val ic = currentInputConnection ?: return
+        captureSegmentContext(ic)
+        val d = TextEditing.prepareDictation(text, segBefore!!, segAfter!!)
+        ic.commitText(d.insert, 1)
+        liveText.append(d.insert)
+        segBefore = null
+        segAfter = null
+        if (d.insert.isNotEmpty()) lastKeyWasPunct = false
+        flushPendingPunct()
+    }
+
+    /** Close the live dictation and expose what was typed as the fixable phrase. */
+    private fun finishLive() {
+        liveActive = false
+        currentInputConnection?.finishComposingText()
+        flushPendingPunct()
+        val typed = liveText.toString()
+        val body = typed.trim()
+        val lead = typed.length - typed.trimStart().length
+        phrase = if (body.isNotEmpty()) DictatedPhrase(body, if (liveStart >= 0) liveStart + lead else -1) else null
+        resetWordSelection()
+        segBefore = null
+        segAfter = null
         renderStrip()
     }
 
+    /** With cleanup enabled, replace the live-typed phrase by its cleaned version. */
+    private fun cleanupLivePhrase() {
+        val p = phrase ?: return
+        if (!DictationEngine.isCleanupEnabled()) return
+        showNotice(getString(R.string.ime_cleaning))
+        DictationEngine.cleanup(p.text) { cleaned, result ->
+            handler.post {
+                notice = null
+                when (result) {
+                    DictationEngine.Notice.CLEANUP_NO_KEY -> notice = getString(R.string.ime_cleanup_no_key)
+                    DictationEngine.Notice.CLEANUP_FAILED -> notice = getString(R.string.ime_cleanup_failed)
+                    DictationEngine.Notice.NONE -> if (phrase == p && cleaned.trim() != p.text) replacePhrase(p, cleaned.trim())
+                }
+                renderStrip()
+            }
+        }
+    }
+
+    private fun replacePhrase(p: DictatedPhrase, text: String) {
+        val ic = currentInputConnection ?: return
+        if (ownerState() != DictationEngine.State.IDLE) return
+        val base = locatePhrase(ic, p) ?: return
+        ic.beginBatchEdit()
+        ic.setSelection(base, base + p.text.length)
+        val current = ic.getSelectedText(0)?.toString()
+        if (current == p.text) {
+            ic.commitText(text, 1)
+            phrase = DictatedPhrase(text, base)
+        } else {
+            val end = maxOf(selStart, selEnd)
+            ic.setSelection(end, end)
+        }
+        ic.endBatchEdit()
+    }
+
+    /** Editing keys during live dictation stop it first (like Gboard); the key itself is dropped. */
+    private fun stopLiveForKey(): Boolean {
+        if (!liveActive || ownerState() != DictationEngine.State.RECORDING) return false
+        DictationEngine.stopAndTranscribe()
+        return true
+    }
+
     private fun commitPlain(text: String) {
+        if (stopLiveForKey()) return
         lastKeyWasPunct = false
         currentInputConnection?.commitText(text, 1)
     }
 
     private fun backspace() {
+        if (stopLiveForKey()) return
         val ic = currentInputConnection ?: return
         lastKeyWasPunct = false
         if (selStart != selEnd && selStart >= 0) ic.commitText("", 1)
@@ -481,6 +635,7 @@ class WhisperImeService : InputMethodService() {
     }
 
     private fun deleteWord() {
+        if (stopLiveForKey()) return
         val ic = currentInputConnection ?: return
         lastKeyWasPunct = false
         if (selStart != selEnd && selStart >= 0) { ic.commitText("", 1); return }
@@ -489,6 +644,7 @@ class WhisperImeService : InputMethodService() {
     }
 
     private fun moveWord(left: Boolean) {
+        if (stopLiveForKey()) return
         val ic = currentInputConnection ?: return
         lastKeyWasPunct = false
         if (selStart < 0 || selEnd < 0) {
@@ -519,6 +675,7 @@ class WhisperImeService : InputMethodService() {
     }
 
     private fun enter() {
+        if (stopLiveForKey()) return
         lastKeyWasPunct = false
         // Performs the field's action (send, search, …) when it has one, otherwise a newline.
         sendKeyChar('\n')
@@ -665,6 +822,7 @@ class WhisperImeService : InputMethodService() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (!swiping && liveActive) return@setOnTouchListener true
                     if (!swiping && kotlin.math.abs(ev.x - downX) > startThreshold) {
                         swiping = true
                         anchorX = ev.x

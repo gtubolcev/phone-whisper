@@ -23,8 +23,11 @@ class LocalTranscriber private constructor(
      * with [StreamingSession.accept] and call [StreamingSession.finish] to get the
      * final text. Returns null for offline models (use [transcribe] instead).
      */
-    fun newStreamingSession(sampleRate: Int = 16000): StreamingSession? =
-        online?.let { StreamingSession(it, sampleRate) }
+    fun newStreamingSession(
+        sampleRate: Int = 16000,
+        onUpdate: StreamingSession.UpdateListener? = null,
+    ): StreamingSession? =
+        online?.let { StreamingSession(it, sampleRate, onUpdate) }
 
     /** Transcribe raw PCM float samples. Blocking — call from background thread. */
     fun transcribe(samples: FloatArray, sampleRate: Int = 16000): String {
@@ -68,7 +71,16 @@ class LocalTranscriber private constructor(
     class StreamingSession internal constructor(
         private val rec: OnlineRecognizer,
         private val sampleRate: Int,
+        private val onUpdate: UpdateListener? = null,
     ) {
+        /** Live progress, called on the decoder thread. */
+        interface UpdateListener {
+            /** The unfinished current segment changed. */
+            fun onPartial(text: String)
+            /** A segment was finalized (pause, [cut] or end of audio). May be empty after [cut]. */
+            fun onSegment(text: String, forced: Boolean)
+        }
+
         private val stream = rec.createStream()
         private val queue = LinkedBlockingQueue<FloatArray>()
         private val committed = StringBuilder()
@@ -81,14 +93,30 @@ class LocalTranscriber private constructor(
                 while (true) {
                     val chunk = queue.take()
                     if (chunk === POISON) break
+                    if (chunk === CUT) {
+                        // Flush the encoder's right context with a little silence so the
+                        // last word is not clipped, then finalize the segment.
+                        stream.acceptWaveform(FloatArray(sampleRate * 3 / 5), sampleRate)
+                        while (rec.isReady(stream)) rec.decode(stream)
+                        val text = rec.getResult(stream).text
+                        commit(text)
+                        rec.reset(stream)
+                        onUpdate?.onSegment(text.trim(), forced = true)
+                        continue
+                    }
                     stream.acceptWaveform(chunk, sampleRate)
                     while (rec.isReady(stream)) rec.decode(stream)
                     val text = rec.getResult(stream).text
                     if (rec.isEndpoint(stream)) {
                         commit(text)
                         rec.reset(stream)
+                        if (text.isNotBlank()) onUpdate?.onSegment(text.trim(), forced = false)
                     } else {
-                        partial = text.trim()
+                        val t = text.trim()
+                        if (t != partial) {
+                            partial = t
+                            onUpdate?.onPartial(t)
+                        }
                     }
                 }
                 if (!aborted) {
@@ -99,7 +127,9 @@ class LocalTranscriber private constructor(
                     stream.acceptWaveform(FloatArray(sampleRate * 6 / 5), sampleRate) // 1.2s
                     stream.inputFinished()
                     while (rec.isReady(stream)) rec.decode(stream)
-                    commit(rec.getResult(stream).text)
+                    val text = rec.getResult(stream).text
+                    commit(text)
+                    onUpdate?.onSegment(text.trim(), forced = false)
                 }
             } catch (e: Exception) {
                 Log.e("StreamingSession", "decode error: ${e.message}")
@@ -129,6 +159,11 @@ class LocalTranscriber private constructor(
             (committed.toString() + " " + partial).trim()
         }
 
+        /** Finalize the current segment now (e.g. the user typed punctuation mid-dictation). */
+        fun cut() {
+            queue.put(CUT)
+        }
+
         /** Signal end of audio, wait for decoding to finish, return final text. */
         fun finish(): String {
             queue.put(POISON)
@@ -144,6 +179,7 @@ class LocalTranscriber private constructor(
 
         private companion object {
             private val POISON = FloatArray(0)
+            private val CUT = FloatArray(0)
         }
     }
 

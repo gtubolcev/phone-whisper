@@ -29,4 +29,5 @@
     <string name="ime_backspace">Backspace</string>
     <string name="ime_enter">Enter</string>
     <string name="ime_switch_keyboard">Switch keyboard (hold for list)</string>
+    <string name="ime_cleaning">Cleaning up…</string>
 </resources>

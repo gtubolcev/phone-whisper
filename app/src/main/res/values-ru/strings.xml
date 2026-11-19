@@ -29,4 +29,5 @@
     <string name="ime_backspace">Стереть</string>
     <string name="ime_enter">Ввод</string>
     <string name="ime_switch_keyboard">Сменить клавиатуру (удерживать — список)</string>
+    <string name="ime_cleaning">Чищу текст…</string>
 </resources>

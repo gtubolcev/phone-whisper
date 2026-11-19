@@ -24,7 +24,9 @@ No accessibility service needed: enable **Phone Whisper voice** in Android keybo
   - **✨ Suggestions** — the cleanup LLM proposes what you probably said (uses the Post-Processing provider and key);
   - **🎤 Again** — re-dictate just that word;
   - **Aa** — flip capitalization; **Delete**; **⌨ Type** — jump to your regular keyboard with the word selected.
+- **Live streaming**: with a streaming local model (Vosk) text appears while you speak — the current piece underlined, fixed on each pause. Punctuation keys work mid-dictation: they close the current piece and place the mark, so the next word after `.?!` starts with a capital. Other keys stop dictation first. With cleanup on, the whole phrase is replaced by the cleaned version after you stop.
 - **← →** move by word, **⌫ word** deletes a word, ⌫ and arrows repeat when held.
+- **Slide on the space bar** to move the cursor by characters; a tap types a space.
 - Keyboard key: tap to return to your previous keyboard, hold for the list.
 
 The keyboard and the floating button share one dictation engine, so the local model is loaded once.
