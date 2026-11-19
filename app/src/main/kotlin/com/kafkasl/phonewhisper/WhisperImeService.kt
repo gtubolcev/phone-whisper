@@ -228,7 +228,7 @@ class WhisperImeService : InputMethodService() {
         val bottomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(switchKey)
-            addView(key(getString(R.string.ime_key_space), 3f, small = true).onTap { commitPlain(" ") })
+            addView(key(getString(R.string.ime_key_space), 3f, small = true).spaceBar())
             addView(key("⌫", 1.2f, alt = true, desc = R.string.ime_backspace).repeating { backspace() })
             addView(key("⏎", 1.2f, alt = true, desc = R.string.ime_enter).onTap { enter() })
         }
@@ -505,6 +505,19 @@ class WhisperImeService : InputMethodService() {
         ic.setSelection(pos, pos)
     }
 
+    /**
+     * Move the cursor one character from absolute position [from]. Steps over surrogate
+     * pairs (emoji) as a whole. Returns the new position, or null at the edge of the text.
+     */
+    private fun stepCursor(ic: InputConnection, from: Int, forward: Boolean): Int? {
+        val n = if (forward) TextEditing.charStepForward(ic.getTextAfterCursor(2, 0) ?: "")
+        else TextEditing.charStepBackward(ic.getTextBeforeCursor(2, 0) ?: "")
+        if (n == 0) return null
+        val to = if (forward) from + n else from - n
+        ic.setSelection(to, to)
+        return to
+    }
+
     private fun enter() {
         lastKeyWasPunct = false
         // Performs the field's action (send, search, …) when it has one, otherwise a newline.
@@ -630,6 +643,76 @@ class WhisperImeService : InputMethodService() {
     }
 
     /** Fire on press and keep repeating while held (backspace, word moves). */
+    /**
+     * Space bar: a tap types a space; sliding the finger left/right moves the cursor one
+     * character per step, like HeliBoard / Gboard.
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun <T : View> T.spaceBar(): T = apply {
+        val startThreshold = dp(14).toFloat()
+        val stepWidth = dp(9).toFloat()
+        var downX = 0f
+        var anchorX = 0f
+        var swiping = false
+        var cursor = -1
+        setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true
+                    v.haptic()
+                    downX = ev.x
+                    swiping = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!swiping && kotlin.math.abs(ev.x - downX) > startThreshold) {
+                        swiping = true
+                        anchorX = ev.x
+                        lastKeyWasPunct = false
+                        // Collapse any selection towards the swipe direction.
+                        cursor = if (ev.x < downX) minOf(selStart, selEnd) else maxOf(selStart, selEnd)
+                        if (selStart != selEnd && cursor >= 0) currentInputConnection?.setSelection(cursor, cursor)
+                    }
+                    if (swiping) {
+                        val ic = currentInputConnection
+                        var steps = ((ev.x - anchorX) / stepWidth).toInt()
+                        if (ic != null && steps != 0) {
+                            anchorX += steps * stepWidth
+                            val forward = steps > 0
+                            var moved = false
+                            while (steps != 0) {
+                                if (cursor < 0) {
+                                    // Position unknown to the IME: fall back to arrow keys.
+                                    sendDownUpKeyEvents(if (forward) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+                                    moved = true
+                                } else {
+                                    val next = stepCursor(ic, cursor, forward) ?: break
+                                    cursor = next
+                                    moved = true
+                                }
+                                steps += if (forward) -1 else 1
+                            }
+                            if (moved) v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.isPressed = false
+                    if (!swiping) commitPlain(" ")
+                    swiping = false
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false
+                    swiping = false
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun <T : View> T.repeating(action: () -> Unit): T = apply {
         val repeat = object : Runnable {

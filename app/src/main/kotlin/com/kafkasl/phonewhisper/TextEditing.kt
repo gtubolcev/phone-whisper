@@ -140,6 +140,21 @@ object TextEditing {
         return text.substring(0, idx) + text[idx].lowercaseChar() + text.substring(idx + 1)
     }
 
+    /** Chars to move right over one visible character (a surrogate pair counts as one). */
+    fun charStepForward(after: CharSequence): Int = when {
+        after.isEmpty() -> 0
+        after.length >= 2 && Character.isHighSurrogate(after[0]) && Character.isLowSurrogate(after[1]) -> 2
+        else -> 1
+    }
+
+    /** Chars to move left over one visible character (a surrogate pair counts as one). */
+    fun charStepBackward(before: CharSequence): Int = when {
+        before.isEmpty() -> 0
+        before.length >= 2 && Character.isLowSurrogate(before[before.length - 1]) &&
+            Character.isHighSurrogate(before[before.length - 2]) -> 2
+        else -> 1
+    }
+
     /** Index of the occurrence of [needle] in [haystack] closest to [hint], or null. */
     fun findNearest(haystack: String, needle: String, hint: Int): Int? {
         if (needle.isEmpty()) return null

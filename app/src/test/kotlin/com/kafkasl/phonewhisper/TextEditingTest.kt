@@ -86,6 +86,15 @@ class TextEditingTest {
         assertEquals(0, TextEditing.nextWordOffset(""))
     }
 
+    @Test fun `char steps treat emoji as one character`() {
+        assertEquals(0, TextEditing.charStepForward(""))
+        assertEquals(1, TextEditing.charStepForward("ab"))
+        assertEquals(2, TextEditing.charStepForward("😀a"))
+        assertEquals(0, TextEditing.charStepBackward(""))
+        assertEquals(1, TextEditing.charStepBackward("ab"))
+        assertEquals(2, TextEditing.charStepBackward("a😀"))
+    }
+
     // --- replacements ---
 
     @Test fun `fit replacement strips whisper punctuation and copies case`() {
