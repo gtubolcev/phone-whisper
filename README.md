@@ -30,6 +30,7 @@ No accessibility service needed: enable **Phone Whisper voice** in Android keybo
 - **← →** move by word, **⌫ word** deletes a word, ⌫ and arrows repeat when held.
 - **Slide on the space bar** to move the cursor by characters; a tap types a space.
 - Keyboard key: tap to return to your previous keyboard, hold for the list.
+- **Voice input for other keyboards**: the keyboard registers as a voice-input method, so the mic key of HeliBoard and other AOSP-style keyboards opens it (enable their voice key if hidden); the keyboard key brings you back.
 
 The keyboard and the floating button share one dictation engine, so the local model is loaded once.
 

@@ -572,12 +572,13 @@ class WhisperImeService : InputMethodService() {
     }
 
     /**
-     * Back to the regular keyboard. switchToNextInputMethod is what Gboard/HeliBoard use for
-     * their globe key; switchToPreviousInputMethod left the next keyboard hidden on some devices.
+     * Back to the keyboard we came from (e.g. after HeliBoard's mic key opened us as its
+     * voice input), else the next one, else the system picker.
      */
     private fun switchToOtherKeyboard() {
+        if (switchToPreviousInputMethod()) return
         val switched = try { switchToNextInputMethod(false) } catch (_: Exception) { false }
-        if (!switched && !switchToPreviousInputMethod()) imm().showInputMethodPicker()
+        if (!switched) imm().showInputMethodPicker()
     }
 
     private fun clearVariants() {
