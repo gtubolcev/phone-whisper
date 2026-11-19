@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
     private lateinit var imeRowSub: TextView
+    private lateinit var micButtonsRowSub: TextView
     private lateinit var cloudConfigContainer: LinearLayout
     private lateinit var cleanupConfigContainer: LinearLayout
     private lateinit var transcriptionKeyRowSub: TextView
@@ -94,6 +95,10 @@ class MainActivity : AppCompatActivity() {
         }
         imeRowSub = imeRow.findViewWithTag("subtitle")
         root.addView(imeRow)
+
+        val micButtonsRow = settingsRow("Keyboard mic buttons", "Checking...") { promptMicButtons() }
+        micButtonsRowSub = micButtonsRow.findViewWithTag("subtitle")
+        root.addView(micButtonsRow)
 
         val accRow = settingsRow("Accessibility service (floating button)", "Checking...") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -393,6 +398,10 @@ class MainActivity : AppCompatActivity() {
 
         audioRowSub.text = if (audio) "Granted" else "Tap to grant permission"
         val ime = isImeEnabled()
+        val micMode = prefs().getString(MicButtons.PREF, MicButtons.DEFAULT)
+        micButtonsRowSub.text = MicButtons.label(micMode) +
+            if (micMode != MicButtons.TAP && !LocalTranscriber.isStreamingInUse(this))
+                " — push-to-talk appears with a streaming local model" else ""
         accRowSub.text = if (acc) "Enabled" else "Optional — tap to enable in settings"
         imeRowSub.text = if (ime) "Enabled — tap to switch keyboards" else "Tap to enable in keyboard settings"
 
@@ -440,6 +449,20 @@ class MainActivity : AppCompatActivity() {
         
         refreshAllCards()
         refreshPromptRows()
+    }
+
+    private fun promptMicButtons() {
+        val modes = arrayOf(MicButtons.TAP, MicButtons.PTT, MicButtons.BOTH)
+        val current = modes.indexOf(prefs().getString(MicButtons.PREF, MicButtons.DEFAULT)).coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Keyboard mic buttons")
+            .setSingleChoiceItems(modes.map { MicButtons.label(it) }.toTypedArray(), current) { dialog, which ->
+                prefs().edit().putString(MicButtons.PREF, modes[which]).apply()
+                dialog.dismiss()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun promptApiKey(prefKey: String, title: String) {

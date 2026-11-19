@@ -30,4 +30,5 @@
     <string name="ime_enter">Ввод</string>
     <string name="ime_switch_keyboard">Сменить клавиатуру (удерживать — список)</string>
     <string name="ime_cleaning">Чищу текст…</string>
+    <string name="ime_ptt">Говорить, удерживая кнопку</string>
 </resources>

@@ -171,3 +171,14 @@ class PcmConverterTest {
         assertEquals(-0.5f, out[1], 1e-6f)
     }
 }
+
+class MicButtonsTest {
+    @Test fun `push-to-talk needs a streaming model`() {
+        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(MicButtons.BOTH, streaming = true))
+        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.BOTH, streaming = false))
+        assertEquals(MicButtons.Visible(tap = false, ptt = true), MicButtons.visible(MicButtons.PTT, streaming = true))
+        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.PTT, streaming = false))
+        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.TAP, streaming = true))
+        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(null, streaming = true))
+    }
+}

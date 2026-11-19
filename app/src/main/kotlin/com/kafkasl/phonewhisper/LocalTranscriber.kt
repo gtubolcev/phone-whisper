@@ -195,6 +195,26 @@ class LocalTranscriber private constructor(
                 ?.map { it.name } ?: emptyList()
         }
 
+        /** A streaming model is marked by "streaming" in its dir name or a `streaming` marker file. */
+        fun isStreamingModelDir(dir: File): Boolean =
+            dir.name.contains("streaming", ignoreCase = true) || File(dir, "streaming").exists()
+
+        /** The model that would be loaded now: the selected one if installed, else the first available. */
+        fun resolveModelName(ctx: Context): String? {
+            val selected = ctx.getSharedPreferences("phonewhisper", Context.MODE_PRIVATE)
+                .getString("model_name", "") ?: ""
+            if (selected.isNotBlank() && isLocalModelInstalled(ctx, selected)) return selected
+            return availableModels(ctx).firstOrNull()
+        }
+
+        /** True if local transcription is on and the model in use is a streaming one. */
+        fun isStreamingInUse(ctx: Context): Boolean {
+            val prefs = ctx.getSharedPreferences("phonewhisper", Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("use_local", true)) return false
+            val name = resolveModelName(ctx) ?: return false
+            return isStreamingModelDir(File(ctx.filesDir, "models/$name"))
+        }
+
         /** Create a LocalTranscriber for the given model directory name. Returns null on failure. */
         fun create(ctx: Context, modelName: String): LocalTranscriber? {
             val modelDir = File(ctx.filesDir, "models/$modelName")
@@ -246,9 +266,7 @@ class LocalTranscriber private constructor(
             val p = dir.absolutePath
             val tokens = "$p/tokens.txt"
             if (!File(tokens).exists()) return null
-            val isStreaming = dir.name.contains("streaming", ignoreCase = true) ||
-                File(dir, "streaming").exists()
-            if (!isStreaming) return null
+            if (!isStreamingModelDir(dir)) return null
 
             val encoder = findFile(p, "encoder") ?: return null
             val decoder = findFile(p, "decoder") ?: return null

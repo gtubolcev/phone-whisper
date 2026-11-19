@@ -30,4 +30,5 @@
     <string name="ime_enter">Enter</string>
     <string name="ime_switch_keyboard">Switch keyboard (hold for list)</string>
     <string name="ime_cleaning">Cleaning up…</string>
+    <string name="ime_ptt">Push to talk (hold)</string>
 </resources>

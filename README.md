@@ -18,6 +18,7 @@ New way: transcription provider here, cleanup provider there, keys stay yours, m
 
 No accessibility service needed: enable **Phone Whisper voice** in Android keyboard settings (or from the app's Setup section) and switch to it in any text field. Bank apps that block accessibility services stay happy.
 
+- **Push-to-talk** (teal mic, streaming local models only): hold to talk, release to finish. In the app, *Keyboard mic buttons* chooses tap mic, push-to-talk or both side by side; without a streaming model the tap mic is shown.
 - **Mic** in the middle: tap to start, tap to stop. Text goes in through the normal keyboard channel, with smart spacing and capitalization.
 - **Smart punctuation** `, . ? !`: replaces the mark the recognizer guessed ("Ты придёшь." + `?` → "Ты придёшь?"). Press two marks in a row to stack them (`?!`, `...`).
 - **Fix a word**: the last phrase appears as tappable words above the mic. Tap one to select it, then:
