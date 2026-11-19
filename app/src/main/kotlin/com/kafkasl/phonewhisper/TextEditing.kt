@@ -140,6 +140,34 @@ object TextEditing {
         return text.substring(0, idx) + text[idx].lowercaseChar() + text.substring(idx + 1)
     }
 
+    /**
+     * The word the cursor is inside: how many chars it extends back into [before] and
+     * forward into [after]. Null unless there are word characters on both sides, so a
+     * cursor at a word boundary (e.g. right after dictation) selects nothing.
+     */
+    fun wordAroundCursor(before: CharSequence, after: CharSequence): Pair<Int, Int>? {
+        if (before.isEmpty() || after.isEmpty()) return null
+        if (!isWordChar(before[before.length - 1]) || !isWordChar(after[0])) return null
+        var back = 0
+        while (back < before.length && isWordChar(before[before.length - 1 - back])) back++
+        var fwd = 0
+        while (fwd < after.length && isWordChar(after[fwd])) fwd++
+        return back to fwd
+    }
+
+    /** True if a user selection looks like one word we can offer fixes for. */
+    fun isSingleWord(text: CharSequence): Boolean =
+        text.length in 1..40 && text.none { it.isWhitespace() } && text.any { it.isLetter() }
+
+    /** Range (end exclusive) to remove when deleting [start, end) from [text], with one adjacent space. */
+    fun deletionExtent(text: CharSequence, start: Int, end: Int): IntRange {
+        var s = start
+        var e = end
+        if (s > 0 && text[s - 1] == ' ') s--
+        else if (e < text.length && text[e] == ' ') e++
+        return s until e
+    }
+
     /** Chars to move right over one visible character (a surrogate pair counts as one). */
     fun charStepForward(after: CharSequence): Int = when {
         after.isEmpty() -> 0

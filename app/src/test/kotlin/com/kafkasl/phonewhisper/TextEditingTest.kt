@@ -95,6 +95,26 @@ class TextEditingTest {
         assertEquals(2, TextEditing.charStepBackward("a😀"))
     }
 
+    @Test fun `word around cursor only inside a word`() {
+        assertEquals(3 to 3, TextEditing.wordAroundCursor("Привет мос", "ква, как"))
+        assertEquals(null, TextEditing.wordAroundCursor("Привет ", "москва"))
+        assertEquals(null, TextEditing.wordAroundCursor("москва", ", как"))
+        assertEquals(null, TextEditing.wordAroundCursor("", "abc"))
+    }
+
+    @Test fun `single word selection`() {
+        assertEquals(true, TextEditing.isSingleWord("Москва,"))
+        assertEquals(false, TextEditing.isSingleWord("два слова"))
+        assertEquals(false, TextEditing.isSingleWord("123"))
+        assertEquals(false, TextEditing.isSingleWord(""))
+    }
+
+    @Test fun `deletion extent takes one adjacent space`() {
+        assertEquals(6 until 10, TextEditing.deletionExtent("Привет мир, как", 7, 10))
+        assertEquals(0 until 4, TextEditing.deletionExtent("мир как", 0, 3))
+        assertEquals(0 until 3, TextEditing.deletionExtent("мир", 0, 3))
+    }
+
     // --- replacements ---
 
     @Test fun `fit replacement strips whisper punctuation and copies case`() {

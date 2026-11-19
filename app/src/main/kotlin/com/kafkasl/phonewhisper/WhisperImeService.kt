@@ -55,15 +55,22 @@ class WhisperImeService : InputMethodService() {
     /** Last dictated phrase, shown as tappable words. */
     private var phrase: DictatedPhrase? = null
     /** Index of the word selected for fixing, with its absolute range in the editor. */
-    private var selectedWord: Int? = null
-    private var selectedRange: IntRange? = null
+    /** The word the strip's fix actions apply to: tapped in the strip, selected or under the cursor. */
+    private var target: WordTarget? = null
+    /** The target is selected (highlighted) in the editor by us. */
+    private var targetHighlighted = false
     /** Cursor position before a word was selected, restored after the fix. */
     private var cursorBeforeSelect = -1
     private var variants: List<String>? = null
     private var variantsLoading = false
     private var variantsRequest = 0
-    /** Word index being re-dictated; null for normal dictation. */
-    private var replaceTarget: Int? = null
+    /** Word being re-dictated; null for normal dictation. */
+    private var replaceTarget: WordTarget? = null
+    /** Selection we just set ourselves, so its onUpdateSelection does not retarget. */
+    private var expectedSel: Pair<Int, Int>? = null
+    private var expectedSelAt = 0L
+    /** Once suggestions were requested, fetch them automatically for each next word. */
+    private var autoVariants = false
     private var notice: String? = null
     private var lastKeyWasPunct = false
 
@@ -79,6 +86,9 @@ class WhisperImeService : InputMethodService() {
     private var segAfter: CharSequence? = null
     /** Punctuation pressed mid-dictation, applied once the cut segment arrives. */
     private val pendingPunct = mutableListOf<Char>()
+
+    /** A word in the editor at absolute [start, end) with some surrounding text for the LLM. */
+    private data class WordTarget(val start: Int, val end: Int, val text: String, val context: String)
 
     // --- Palette (day / night) ---
     private var night = false
@@ -141,6 +151,7 @@ class WhisperImeService : InputMethodService() {
         if (!restarting) {
             clearPhrase()
             notice = null
+            autoVariants = false
         }
     }
 
@@ -173,17 +184,45 @@ class WhisperImeService : InputMethodService() {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         selStart = newSelStart
         selEnd = newSelEnd
-        val range = selectedRange
-        if (selectedWord != null && replaceTarget == null &&
-            (range == null || newSelStart != range.first || newSelEnd != range.last + 1)
-        ) {
-            // The user moved the cursor themselves: drop the word actions, keep the word strip.
-            selectedWord = null
-            selectedRange = null
-            variants = null
-            variantsLoading = false
-            renderStrip()
+        if (liveActive || replaceTarget != null || ownerState() != DictationEngine.State.IDLE) return
+        val expected = expectedSel
+        if (expected != null && android.os.SystemClock.uptimeMillis() - expectedSelAt < 1000) {
+            // Our own setSelection/commit: ignore intermediate updates until it lands.
+            if (expected == (newSelStart to newSelEnd)) expectedSel = null
+            return
         }
+        expectedSel = null
+        retarget()
+    }
+
+    /** Point the fix actions at the word under the cursor or the selected word (or nothing). */
+    private fun retarget() {
+        val ic = currentInputConnection ?: return
+        val t = wordAt(ic)
+        val cur = target
+        if (t != null && cur != null && t.start == cur.start && t.end == cur.end && t.text == cur.text) return
+        if (t == null && cur == null) return
+        target = t
+        targetHighlighted = t != null && selStart != selEnd
+        cursorBeforeSelect = -1
+        clearVariants()
+        if (t != null && autoVariants) requestVariants() else renderStrip()
+    }
+
+    /** Word under a collapsed cursor (strictly inside it) or a single selected word. */
+    private fun wordAt(ic: InputConnection): WordTarget? {
+        if (selStart < 0 || selEnd < 0) return null
+        val before = ic.getTextBeforeCursor(120, 0) ?: return null
+        val after = ic.getTextAfterCursor(120, 0) ?: return null
+        if (selStart == selEnd) {
+            val (back, fwd) = TextEditing.wordAroundCursor(before, after) ?: return null
+            val word = before.subSequence(before.length - back, before.length).toString() + after.subSequence(0, fwd)
+            return WordTarget(selStart - back, selStart + fwd, word, (before.toString() + after).trim())
+        }
+        val selected = ic.getSelectedText(0)?.toString() ?: return null
+        if (!TextEditing.isSingleWord(selected)) return null
+        val start = minOf(selStart, selEnd)
+        return WordTarget(start, start + selected.length, selected, (before.toString() + selected + after).trim())
     }
 
     // --- Layout ---
@@ -281,7 +320,7 @@ class WhisperImeService : InputMethodService() {
     }
 
     /** Start dictating; with [target] the result replaces that word of the last phrase. */
-    private fun startDictation(target: Int?): Boolean {
+    private fun startDictation(target: WordTarget?): Boolean {
         notice = null
         replaceTarget = target
         // Live typing only for normal dictation; a re-dictated word is replaced in one go.
@@ -289,7 +328,7 @@ class WhisperImeService : InputMethodService() {
             DictationEngine.StartResult.STARTED -> {
                 liveActive = DictationEngine.isLive
                 if (liveActive) {
-                    if (selectedWord != null) deselectWord()
+                    if (targetHighlighted) deselectWord() else clearTarget()
                     liveStart = minOf(selStart, selEnd)
                     liveText.setLength(0)
                     segBefore = null
@@ -322,12 +361,11 @@ class WhisperImeService : InputMethodService() {
             cleanupLivePhrase()
             return
         }
-        val target = replaceTarget
+        val t = replaceTarget
         replaceTarget = null
-        val p = phrase
-        if (target != null && p != null && target < p.words.size) {
-            val fitted = TextEditing.fitReplacement(text, p.words[target].text)
-            if (fitted.isNotEmpty()) replaceWord(target, fitted, keepSelected = false)
+        if (t != null) {
+            val fitted = TextEditing.fitReplacement(text, t.text)
+            if (fitted.isNotEmpty()) replaceTargetText(t, fitted, keepSelected = false)
             return
         }
         insertDictation(text)
@@ -384,115 +422,178 @@ class WhisperImeService : InputMethodService() {
         showNotice(getString(R.string.ime_text_changed))
     }
 
-    private fun selectWord(index: Int) {
+    /** Our own selection change: its onUpdateSelection must not retarget. */
+    private fun expectSelection(ic: InputConnection, start: Int, end: Int) {
+        expectedSel = start to end
+        expectedSelAt = android.os.SystemClock.uptimeMillis()
+        ic.setSelection(start, end)
+    }
+
+    /** Tap on a word of the last phrase: select it in the editor and show its actions. */
+    private fun selectPhraseWord(index: Int) {
         if (liveActive) return
         val ic = currentInputConnection ?: return
         val p = phrase ?: return
         val base = locatePhrase(ic, p) ?: return phraseLost()
         val located = p.withStart(base)
         phrase = located
-        val w = located.words[index]
-        if (selectedWord == null) cursorBeforeSelect = maxOf(selStart, selEnd)
-        selectedWord = index
-        selectedRange = (base + w.start) until (base + w.end)
-        variants = null
-        variantsLoading = false
-        variantsRequest++
+        val w = located.words.getOrNull(index) ?: return
+        if (!targetHighlighted) cursorBeforeSelect = maxOf(selStart, selEnd)
+        target = WordTarget(base + w.start, base + w.end, w.text, located.text)
+        targetHighlighted = true
+        clearVariants()
         notice = null
         lastKeyWasPunct = false
-        ic.setSelection(base + w.start, base + w.end)
-        renderStrip()
+        expectSelection(ic, base + w.start, base + w.end)
+        if (autoVariants) requestVariants() else renderStrip()
+    }
+
+    /** True if the editor still holds [t]'s text at its range (unknown editors pass). */
+    private fun stillThere(ic: InputConnection, t: WordTarget): Boolean {
+        val ex = ic.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 20000 }, 0)
+        val full = ex?.text ?: return true
+        val s = t.start - ex.startOffset
+        val e = t.end - ex.startOffset
+        if (s < 0 || e > full.length) return true
+        return full.subSequence(s, e).toString() == t.text
     }
 
     /**
-     * Replace word [index] of the last phrase with [replacement] (empty = delete it).
-     * Afterwards the cursor returns to where it was before the word was selected, or the
-     * word stays selected with [keepSelected].
+     * Replace the word [t] with [replacement] (empty = delete it with one adjacent space).
+     * Afterwards the cursor returns to where it was before the word was tapped (or after
+     * the new word), or the new word stays selected with [keepSelected].
      */
-    private fun replaceWord(index: Int, replacement: String, keepSelected: Boolean) {
+    private fun replaceTargetText(t: WordTarget, replacement: String, keepSelected: Boolean) {
         val ic = currentInputConnection ?: return
-        val p = phrase ?: return
-        if (index >= p.words.size) return
-        val base = locatePhrase(ic, p) ?: return phraseLost()
-        val w = p.words[index]
-
-        val removeRange = if (replacement.isEmpty()) p.deletionRange(index) else w.start until w.end
-        val absStart = base + removeRange.first
-        val absEnd = base + removeRange.last + 1
-        val delta = replacement.length - (absEnd - absStart)
-        val updated = (if (replacement.isEmpty()) p.delete(index) else p.replace(index, replacement)).withStart(base)
+        if (!stillThere(ic, t)) {
+            clearTarget()
+            showNotice(getString(R.string.ime_text_changed))
+            return
+        }
+        var s = t.start
+        var e = t.end
+        if (replacement.isEmpty()) {
+            val ex = ic.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 20000 }, 0)
+            val full = ex?.text
+            if (full != null) {
+                val r = TextEditing.deletionExtent(full, s - ex.startOffset, e - ex.startOffset)
+                s = r.first + ex.startOffset
+                e = r.last + 1 + ex.startOffset
+            }
+        }
+        val delta = replacement.length - (e - s)
+        val saved = cursorBeforeSelect
 
         ic.beginBatchEdit()
-        ic.setSelection(absStart, absEnd)
+        ic.setSelection(s, e)
         ic.commitText(replacement, 1)
         if (keepSelected && replacement.isNotEmpty()) {
-            selectedRange = absStart until (absStart + replacement.length)
-            ic.setSelection(absStart, absStart + replacement.length)
+            expectSelection(ic, s, s + replacement.length)
         } else {
-            val saved = cursorBeforeSelect
-            val target = when {
-                saved < 0 -> absStart + replacement.length
-                saved >= absEnd -> saved + delta
-                saved > absStart -> absStart + replacement.length
+            val cursor = when {
+                saved < 0 -> s + replacement.length
+                saved >= e -> saved + delta
+                saved > s -> s + replacement.length
                 else -> saved
             }
-            ic.setSelection(target, target)
+            expectSelection(ic, cursor, cursor)
         }
         ic.endBatchEdit()
 
-        phrase = updated.takeIf { it.words.isNotEmpty() }
+        adjustPhrase(s, e, replacement)
         if (keepSelected && replacement.isNotEmpty()) {
-            variants = null
-            variantsRequest++
+            target = WordTarget(s, s + replacement.length, replacement, t.context.replace(t.text, replacement))
+            targetHighlighted = true
+            clearVariants()
+            if (autoVariants) requestVariants()
         } else {
-            resetWordSelection()
+            clearTarget()
         }
         renderStrip()
     }
 
+    /** Keep the last-phrase model in sync after the editor range [s, e) became [replacement]. */
+    private fun adjustPhrase(s: Int, e: Int, replacement: String) {
+        val p = phrase ?: return
+        if (p.start < 0) return
+        val pEnd = p.start + p.text.length
+        val delta = replacement.length - (e - s)
+        phrase = when {
+            e <= p.start -> p.withStart(p.start + delta)
+            s >= pEnd -> p
+            s >= p.start && e <= pEnd ->
+                DictatedPhrase(p.text.replaceRange(s - p.start, e - p.start, replacement).trim(), p.start)
+                    .takeIf { it.words.isNotEmpty() }
+            else -> null
+        }
+    }
+
+    /** ✕: drop the actions; a word we highlighted is unselected and the cursor restored. */
     private fun deselectWord() {
         val ic = currentInputConnection
         val saved = cursorBeforeSelect
-        resetWordSelection()
-        if (ic != null && saved >= 0) ic.setSelection(saved, saved)
+        val wasHighlighted = targetHighlighted
+        val t = target
+        clearTarget()
+        if (ic != null && wasHighlighted) {
+            val pos = if (saved >= 0) saved else t?.end ?: -1
+            if (pos >= 0) expectSelection(ic, pos, pos)
+        }
         renderStrip()
     }
 
     private fun requestVariants() {
-        val index = selectedWord ?: return
-        val p = phrase ?: return
-        val word = p.words.getOrNull(index)?.text ?: return
+        val t = target ?: return
+        autoVariants = true
         val id = ++variantsRequest
         variantsLoading = true
         renderStrip()
-        WordAlternatives.request(this, p.text, word) { list, error ->
+        WordAlternatives.request(this, t.context, t.text) { list, error ->
             handler.post {
                 if (id != variantsRequest) return@post
                 variantsLoading = false
                 when {
-                    list == null && error == null -> notice = getString(R.string.ime_variants_need_key)
+                    list == null && error == null -> { notice = getString(R.string.ime_variants_need_key); autoVariants = false }
                     list == null -> notice = getString(R.string.ime_variants_error, error)
                     list.isEmpty() -> notice = getString(R.string.ime_variants_none)
-                    else -> variants = list.map { TextEditing.fitReplacement(it, word) }.filter { it.isNotEmpty() }
+                    else -> variants = list.map { TextEditing.fitReplacement(it, t.text) }.filter { it.isNotEmpty() }
                 }
                 renderStrip()
             }
         }
     }
 
-    /** Hand over to the regular keyboard with the word still selected, so typing replaces it. */
-    private fun switchToOtherKeyboard() {
-        if (!switchToPreviousInputMethod()) imm().showInputMethodPicker()
+    /** "Type": select the word so the regular keyboard types over it, then switch. */
+    private fun typeOverTarget() {
+        val ic = currentInputConnection
+        val t = target
+        if (ic != null && t != null && !targetHighlighted) expectSelection(ic, t.start, t.end)
+        switchToOtherKeyboard()
     }
 
-    private fun resetWordSelection() {
-        selectedWord = null
-        selectedRange = null
-        cursorBeforeSelect = -1
+    /**
+     * Back to the regular keyboard. switchToNextInputMethod is what Gboard/HeliBoard use for
+     * their globe key; switchToPreviousInputMethod left the next keyboard hidden on some devices.
+     */
+    private fun switchToOtherKeyboard() {
+        val switched = try { switchToNextInputMethod(false) } catch (_: Exception) { false }
+        if (!switched && !switchToPreviousInputMethod()) imm().showInputMethodPicker()
+    }
+
+    private fun clearVariants() {
         variants = null
         variantsLoading = false
         variantsRequest++
     }
+
+    private fun clearTarget() {
+        target = null
+        targetHighlighted = false
+        cursorBeforeSelect = -1
+        clearVariants()
+    }
+
+    private fun resetWordSelection() = clearTarget()
 
     private fun clearPhrase() {
         phrase = null
@@ -511,7 +612,7 @@ class WhisperImeService : InputMethodService() {
             }
             return
         }
-        if (selectedWord != null) deselectWord()
+        if (targetHighlighted) deselectWord()
         notice = null
         applyPunct(mark)
         renderStrip()
@@ -772,31 +873,30 @@ class WhisperImeService : InputMethodService() {
         val p = phrase
         when (ownerState()) {
             DictationEngine.State.RECORDING -> {
-                val target = replaceTarget?.let { p?.words?.getOrNull(it)?.text }
+                val redo = replaceTarget?.text
                 row.addView(label(
-                    if (target != null) getString(R.string.ime_redictate_recording, target)
+                    if (redo != null) getString(R.string.ime_redictate_recording, redo)
                     else getString(R.string.ime_recording)
                 ))
             }
             DictationEngine.State.TRANSCRIBING -> row.addView(label(getString(R.string.ime_transcribing)))
             DictationEngine.State.IDLE -> {
                 notice?.let { row.addView(label(it, highlight = true)) }
-                val index = selectedWord
-                val word = index?.let { p?.words?.getOrNull(it) }
-                if (index != null && word != null) {
-                    row.addView(label("«${word.text}»", bold = true))
-                    variants?.forEach { v -> row.addView(chip(v, primary = true) { replaceWord(index, v, keepSelected = false) }) }
+                val t = target
+                if (t != null) {
+                    row.addView(label("«${t.text}»", bold = true))
+                    variants?.forEach { v -> row.addView(chip(v, primary = true) { replaceTargetText(t, v, keepSelected = false) }) }
                     if (variants == null) {
                         val text = if (variantsLoading) getString(R.string.ime_variants_loading) else getString(R.string.ime_action_variants)
                         row.addView(chip(text, primary = true) { if (!variantsLoading) requestVariants() })
                     }
-                    row.addView(chip(getString(R.string.ime_action_redictate)) { startDictation(index) })
-                    row.addView(chip("Aa") { replaceWord(index, TextEditing.toggleFirstLetterCase(word.text), keepSelected = true) })
-                    row.addView(chip(getString(R.string.ime_action_delete)) { replaceWord(index, "", keepSelected = false) })
-                    row.addView(chip(getString(R.string.ime_action_type)) { switchToOtherKeyboard() })
+                    row.addView(chip(getString(R.string.ime_action_redictate)) { startDictation(t) })
+                    row.addView(chip("Aa") { replaceTargetText(t, TextEditing.toggleFirstLetterCase(t.text), keepSelected = true) })
+                    row.addView(chip(getString(R.string.ime_action_delete)) { replaceTargetText(t, "", keepSelected = false) })
+                    row.addView(chip(getString(R.string.ime_action_type)) { typeOverTarget() })
                     row.addView(chip("✕") { deselectWord() })
                 } else if (p != null && p.words.isNotEmpty()) {
-                    p.words.forEachIndexed { i, w -> row.addView(chip(w.text) { selectWord(i) }) }
+                    p.words.forEachIndexed { i, w -> row.addView(chip(w.text) { selectPhraseWord(i) }) }
                     row.addView(chip("✕") { clearPhrase(); notice = null; renderStrip() })
                 } else if (notice == null) {
                     row.addView(label(getString(R.string.ime_hint)))
