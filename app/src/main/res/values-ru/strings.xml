@@ -31,4 +31,6 @@
     <string name="ime_switch_keyboard">Сменить клавиатуру (удерживать — список)</string>
     <string name="ime_cleaning">Чищу текст…</string>
     <string name="ime_ptt">Говорить, удерживая кнопку</string>
+    <string name="remote_permission_label">использовать диктовку Phone Whisper</string>
+    <string name="remote_permission_description">Передавать звук с микрофона в Phone Whisper для распознавания речи (на устройстве или с вашими API-ключами) и получать текст.</string>
 </resources>

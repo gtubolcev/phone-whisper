@@ -205,6 +205,44 @@ object DictationEngine {
             return StartResult.MIC_ERROR
         }
 
+        val gen = begin(owner, cleanup, live, useLocal, record)
+
+        thread {
+            val buf = ByteArray(bufSize)
+            while (state == State.RECORDING && generation == gen) {
+                val n = audioRecord?.read(buf, 0, buf.size) ?: break
+                if (n > 0) {
+                    pcmStream?.write(buf, 0, n)
+                    val level = audioLevel(buf, n)
+                    handler.post { if (generation == gen) listener?.onLevel(level) }
+                    streamSession?.accept(PcmConverter.toFloatSamples(buf, n))
+                }
+            }
+        }
+        return StartResult.STARTED
+    }
+
+    /**
+     * Start an utterance whose audio comes from another process (the HeliBoard fork records
+     * itself, since a background app may not use the microphone). Feed 16 kHz mono 16-bit
+     * little-endian PCM with [feedExternal], then [stopAndTranscribe] as usual.
+     */
+    fun startExternal(owner: Listener, cleanup: Boolean = true, live: Boolean = false): StartResult {
+        if (state != State.IDLE) return StartResult.BUSY
+        val useLocal = prefs().getBoolean("use_local", true)
+        if (useLocal) ensureModelLoaded()
+        begin(owner, cleanup, live, useLocal, null)
+        return StartResult.STARTED
+    }
+
+    /** Audio for an utterance started with [startExternal]. Main thread. */
+    fun feedExternal(pcm: ByteArray) {
+        if (state != State.RECORDING || audioRecord != null || pcm.isEmpty()) return
+        pcmStream?.write(pcm, 0, pcm.size)
+        streamSession?.accept(PcmConverter.toFloatSamples(pcm, pcm.size))
+    }
+
+    private fun begin(owner: Listener, cleanup: Boolean, live: Boolean, useLocal: Boolean, record: AudioRecord?): Int {
         val gen = ++generation
         listener = owner
         audioRecord = record
@@ -221,20 +259,7 @@ object DictationEngine {
 
         state = State.RECORDING
         owner.onStateChanged(State.RECORDING)
-
-        thread {
-            val buf = ByteArray(bufSize)
-            while (state == State.RECORDING && generation == gen) {
-                val n = audioRecord?.read(buf, 0, buf.size) ?: break
-                if (n > 0) {
-                    pcmStream?.write(buf, 0, n)
-                    val level = audioLevel(buf, n)
-                    handler.post { if (generation == gen) listener?.onLevel(level) }
-                    streamSession?.accept(PcmConverter.toFloatSamples(buf, n))
-                }
-            }
-        }
-        return StartResult.STARTED
+        return gen
     }
 
     private fun liveUpdates(gen: Int) = object : LocalTranscriber.StreamingSession.UpdateListener {

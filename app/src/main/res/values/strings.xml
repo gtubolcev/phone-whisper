@@ -31,4 +31,6 @@
     <string name="ime_switch_keyboard">Switch keyboard (hold for list)</string>
     <string name="ime_cleaning">Cleaning up…</string>
     <string name="ime_ptt">Push to talk (hold)</string>
+    <string name="remote_permission_label">use Phone Whisper dictation</string>
+    <string name="remote_permission_description">Send microphone audio to Phone Whisper for speech recognition (on-device or with your API keys) and receive the text.</string>
 </resources>
