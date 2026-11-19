@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -46,3 +48,21 @@ jobs:
           name: phone-whisper-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Artifacts need a signed-in browser; a pre-release gives a plain download link:
+      # https://github.com/<owner>/<repo>/releases/download/build-<branch>/phone-whisper-debug.apk
+      - name: Publish APK as a pre-release for this branch
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="${GITHUB_REF_NAME//\//-}"
+          tag="build-$branch"
+          cp app/build/outputs/apk/debug/app-debug.apk phone-whisper-debug.apk
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" phone-whisper-debug.apk \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Debug APK: $GITHUB_REF_NAME" \
+            --notes "Debug build of $GITHUB_REF_NAME at ${GITHUB_SHA::7}. Installs next to the upstream app as \"Phone Whisper OpenAI\"."
