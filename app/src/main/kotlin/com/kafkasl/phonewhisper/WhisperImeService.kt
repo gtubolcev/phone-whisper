@@ -138,6 +138,8 @@ class WhisperImeService : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        ImeLog.init(this)
+        ImeLog.add("onCreate")
         DictationEngine.attach(this)
     }
 
@@ -145,6 +147,7 @@ class WhisperImeService : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        ImeLog.add("onStartInput pkg=${attribute.packageName} restarting=$restarting type=0x${Integer.toHexString(attribute.inputType)}")
         selStart = attribute.initialSelStart
         selEnd = attribute.initialSelEnd
         lastKeyWasPunct = false
@@ -157,6 +160,7 @@ class WhisperImeService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        ImeLog.add("onStartInputView restarting=$restarting")
         // Warm the local model while the keyboard is visible; it is freed after idling.
         DictationEngine.ensureModelLoaded()
         DictationEngine.scheduleModelRelease()
@@ -165,7 +169,44 @@ class WhisperImeService : InputMethodService() {
         renderStrip()
     }
 
+    override fun onFinishInput() {
+        ImeLog.add("onFinishInput")
+        super.onFinishInput()
+    }
+
+    override fun onWindowShown() {
+        super.onWindowShown()
+        ImeLog.add("onWindowShown")
+    }
+
+    override fun onWindowHidden() {
+        ImeLog.add("onWindowHidden")
+        super.onWindowHidden()
+    }
+
+    override fun onUnbindInput() {
+        ImeLog.add("onUnbindInput")
+        super.onUnbindInput()
+    }
+
+    override fun onDestroy() {
+        ImeLog.add("onDestroy")
+        super.onDestroy()
+    }
+
+    override fun onCurrentInputMethodSubtypeChanged(newSubtype: android.view.inputmethod.InputMethodSubtype?) {
+        ImeLog.add("onCurrentInputMethodSubtypeChanged mode=${newSubtype?.mode}")
+        super.onCurrentInputMethodSubtypeChanged(newSubtype)
+    }
+
+    override fun onShowInputRequested(flags: Int, configChange: Boolean): Boolean {
+        val r = super.onShowInputRequested(flags, configChange)
+        ImeLog.add("onShowInputRequested flags=$flags config=$configChange -> $r")
+        return r
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) {
+        ImeLog.add("onFinishInputView finishingInput=$finishingInput")
         // Never type a late result into whatever field gets focus next.
         DictationEngine.cancel(listener)
         replaceTarget = null
@@ -576,8 +617,11 @@ class WhisperImeService : InputMethodService() {
      * voice input), else the next one, else the system picker.
      */
     private fun switchToOtherKeyboard() {
-        if (switchToPreviousInputMethod()) return
+        val prev = switchToPreviousInputMethod()
+        ImeLog.add("key: switchToPreviousInputMethod -> $prev")
+        if (prev) return
         val switched = try { switchToNextInputMethod(false) } catch (_: Exception) { false }
+        ImeLog.add("key: switchToNextInputMethod -> $switched")
         if (!switched) imm().showInputMethodPicker()
     }
 

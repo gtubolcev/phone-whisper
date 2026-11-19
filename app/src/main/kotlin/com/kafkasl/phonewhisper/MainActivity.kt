@@ -100,6 +100,10 @@ class MainActivity : AppCompatActivity() {
         micButtonsRowSub = micButtonsRow.findViewWithTag("subtitle")
         root.addView(micButtonsRow)
 
+        root.addView(settingsRow("Keyboard diagnostics log", "Events of the voice keyboard, to copy into a bug report") {
+            showImeLog()
+        })
+
         val accRow = settingsRow("Accessibility service (floating button)", "Checking...") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -464,6 +468,30 @@ class MainActivity : AppCompatActivity() {
         
         refreshAllCards()
         refreshPromptRows()
+    }
+
+    private fun showImeLog() {
+        val text = ImeLog.read(this)
+        val view = TextView(this).apply {
+            this.text = text
+            textSize = 11f
+            setTextIsSelectable(true)
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        val scroll = ScrollView(this).apply { addView(view) }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Keyboard diagnostics log")
+            .setView(scroll)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("Phone Whisper keyboard log", text))
+                toast("Log copied")
+            }
+            .setNeutralButton("Clear") { _, _ -> ImeLog.clear(this); toast("Log cleared") }
+            .setNegativeButton("Close", null)
+            .show()
+        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun promptMicButtons() {
