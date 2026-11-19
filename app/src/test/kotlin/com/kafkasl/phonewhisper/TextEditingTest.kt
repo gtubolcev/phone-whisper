@@ -182,3 +182,35 @@ class MicButtonsTest {
         assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(null, streaming = true))
     }
 }
+
+class VadGateTest {
+    private fun window(v: Float) = FloatArray(4) { v }
+
+    /** Detector says "speech" for windows whose samples are 1. */
+    private fun gate(preRoll: Int = 2) = VadGate(windowSize = 4, preRollWindows = preRoll) { it[0] == 1f }
+
+    private fun run(g: VadGate, vararg windows: Float): List<String> {
+        val out = mutableListOf<VadGate.Event>()
+        windows.forEach { g.accept(window(it), out) }
+        return out.map { if (it is VadGate.Event.Audio) "A${it.samples[0].toInt()}" else "END" }
+    }
+
+    @Test fun `silence never reaches the recognizer`() {
+        assertEquals(emptyList<String>(), run(gate(), 0f, 0f, 0f, 0f))
+    }
+
+    @Test fun `speech is fed with pre-roll and closed by speech end`() {
+        // windows: 0 0 0 1 1 0  → pre-roll keeps the last two silent windows
+        assertEquals(listOf("A0", "A0", "A1", "A1", "END"), run(gate(), 0f, 0f, 0f, 1f, 1f, 0f))
+    }
+
+    @Test fun `chunks are re-cut into detector windows`() {
+        val g = gate(preRoll = 0)
+        val out = mutableListOf<VadGate.Event>()
+        g.accept(FloatArray(6) { 1f }, out)
+        assertEquals(1, out.size)
+        g.accept(FloatArray(2) { 1f }, out)
+        assertEquals(2, out.size)
+        assertEquals(true, g.inSpeech)
+    }
+}

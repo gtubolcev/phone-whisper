@@ -13,6 +13,8 @@ import java.util.concurrent.LinkedBlockingQueue
 class LocalTranscriber private constructor(
     private val offline: OfflineRecognizer?,
     private val online: OnlineRecognizer?,
+    /** Voice activity detector gating streaming sessions; null when disabled or unavailable. */
+    private val vad: Vad? = null,
 ) {
 
     /** True if the loaded model is a streaming (online) model. */
@@ -27,7 +29,7 @@ class LocalTranscriber private constructor(
         sampleRate: Int = 16000,
         onUpdate: StreamingSession.UpdateListener? = null,
     ): StreamingSession? =
-        online?.let { StreamingSession(it, sampleRate, onUpdate) }
+        online?.let { StreamingSession(it, sampleRate, onUpdate, vad) }
 
     /** Transcribe raw PCM float samples. Blocking — call from background thread. */
     fun transcribe(samples: FloatArray, sampleRate: Int = 16000): String {
@@ -57,6 +59,7 @@ class LocalTranscriber private constructor(
     fun release() {
         offline?.release()
         online?.release()
+        vad?.release()
     }
 
     /**
@@ -72,6 +75,7 @@ class LocalTranscriber private constructor(
         private val rec: OnlineRecognizer,
         private val sampleRate: Int,
         private val onUpdate: UpdateListener? = null,
+        private val vad: Vad? = null,
     ) {
         /** Live progress, called on the decoder thread. */
         interface UpdateListener {
@@ -88,35 +92,71 @@ class LocalTranscriber private constructor(
         @Volatile private var aborted = false
         private val lock = Any()
 
+        /** With a VAD only detected speech reaches the recognizer; null = feed everything. */
+        private val gate: VadGate? = vad?.let { v ->
+            VadGate(
+                windowSize = VAD_WINDOW,
+                preRollWindows = sampleRate * 6 / 10 / VAD_WINDOW, // ~0.6 s before speech onset
+            ) { window ->
+                v.acceptWaveform(window)
+                val speech = v.isSpeechDetected()
+                v.clear() // segments are not used; keep the native queue empty
+                speech
+            }
+        }
+        private val events = ArrayList<VadGate.Event>()
+
+        /** Feed speech audio, decode, and report a partial or an endpoint segment. */
+        private fun feed(samples: FloatArray) {
+            stream.acceptWaveform(samples, sampleRate)
+            while (rec.isReady(stream)) rec.decode(stream)
+            val text = rec.getResult(stream).text
+            if (rec.isEndpoint(stream)) {
+                commit(text)
+                rec.reset(stream)
+                if (text.isNotBlank()) onUpdate?.onSegment(text.trim(), forced = false)
+            } else {
+                val t = text.trim()
+                if (t != partial) {
+                    partial = t
+                    onUpdate?.onPartial(t)
+                }
+            }
+        }
+
+        /**
+         * Flush the encoder's right context with a little silence so the last word is not
+         * clipped, then finalize the segment and start a fresh one.
+         */
+        private fun finalizeSegment(forced: Boolean) {
+            stream.acceptWaveform(FloatArray(sampleRate * 3 / 5), sampleRate)
+            while (rec.isReady(stream)) rec.decode(stream)
+            val text = rec.getResult(stream).text
+            commit(text)
+            rec.reset(stream)
+            if (forced || text.isNotBlank()) onUpdate?.onSegment(text.trim(), forced)
+        }
+
         private val worker = Thread {
             try {
+                vad?.reset()
                 while (true) {
                     val chunk = queue.take()
                     if (chunk === POISON) break
                     if (chunk === CUT) {
-                        // Flush the encoder's right context with a little silence so the
-                        // last word is not clipped, then finalize the segment.
-                        stream.acceptWaveform(FloatArray(sampleRate * 3 / 5), sampleRate)
-                        while (rec.isReady(stream)) rec.decode(stream)
-                        val text = rec.getResult(stream).text
-                        commit(text)
-                        rec.reset(stream)
-                        onUpdate?.onSegment(text.trim(), forced = true)
+                        finalizeSegment(forced = true)
                         continue
                     }
-                    stream.acceptWaveform(chunk, sampleRate)
-                    while (rec.isReady(stream)) rec.decode(stream)
-                    val text = rec.getResult(stream).text
-                    if (rec.isEndpoint(stream)) {
-                        commit(text)
-                        rec.reset(stream)
-                        if (text.isNotBlank()) onUpdate?.onSegment(text.trim(), forced = false)
-                    } else {
-                        val t = text.trim()
-                        if (t != partial) {
-                            partial = t
-                            onUpdate?.onPartial(t)
-                        }
+                    val g = gate
+                    if (g == null) {
+                        feed(chunk)
+                        continue
+                    }
+                    events.clear()
+                    g.accept(chunk, events)
+                    for (e in events) when (e) {
+                        is VadGate.Event.Audio -> feed(e.samples)
+                        VadGate.Event.SpeechEnd -> finalizeSegment(forced = false)
                     }
                 }
                 if (!aborted) {
@@ -180,6 +220,7 @@ class LocalTranscriber private constructor(
         private companion object {
             private val POISON = FloatArray(0)
             private val CUT = FloatArray(0)
+            private const val VAD_WINDOW = 512
         }
     }
 
@@ -194,6 +235,39 @@ class LocalTranscriber private constructor(
                 ?.filter { it.isDirectory && !it.name.startsWith(".") && isLocalModelInstalled(ctx, it.name) }
                 ?.map { it.name } ?: emptyList()
         }
+
+        const val VAD_PREF = "streaming_vad"
+
+        /**
+         * Silero VAD (bundled in assets) for streaming sessions, if enabled. A pause of
+         * [VAD_MIN_SILENCE_S] ends a speech region; failure just disables gating.
+         */
+        private fun createVad(ctx: Context): Vad? {
+            val enabled = ctx.getSharedPreferences("phonewhisper", Context.MODE_PRIVATE).getBoolean(VAD_PREF, true)
+            if (!enabled) return null
+            return try {
+                Vad(
+                    assetManager = ctx.assets,
+                    config = VadModelConfig(
+                        sileroVadModelConfig = SileroVadModelConfig(
+                            model = "silero_vad.onnx",
+                            threshold = 0.5f,
+                            minSilenceDuration = VAD_MIN_SILENCE_S,
+                            minSpeechDuration = 0.25f,
+                            windowSize = 512,
+                            maxSpeechDuration = 30f,
+                        ),
+                        sampleRate = 16000,
+                        numThreads = 1,
+                    ),
+                ).also { Log.i(TAG, "Silero VAD enabled for streaming") }
+            } catch (e: Throwable) {
+                Log.e(TAG, "VAD unavailable, streaming without it: ${e.message}")
+                null
+            }
+        }
+
+        private const val VAD_MIN_SILENCE_S = 0.5f
 
         /** A streaming model is marked by "streaming" in its dir name or a `streaming` marker file. */
         fun isStreamingModelDir(dir: File): Boolean =
@@ -230,7 +304,7 @@ class LocalTranscriber private constructor(
                 return try {
                     val recognizer = OnlineRecognizer(assetManager = null, config = onlineConfig)
                     Log.i(TAG, "Loaded streaming model: $modelName")
-                    LocalTranscriber(offline = null, online = recognizer)
+                    LocalTranscriber(offline = null, online = recognizer, vad = createVad(ctx))
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to load streaming model: ${e.message}")
                     null

@@ -168,6 +168,21 @@ class MainActivity : AppCompatActivity() {
             greedySwitch.isChecked = newVal
             DictationEngine.reloadModel()
         })
+
+        val vadSwitch = MaterialSwitch(this).apply {
+            isChecked = prefs().getBoolean(LocalTranscriber.VAD_PREF, true)
+            isClickable = false
+        }
+        modelContainer.addView(settingsRow(
+            "Voice activity detection",
+            "Streaming models only hear speech (Silero VAD): no words invented from noise or silence",
+            vadSwitch
+        ) {
+            val newVal = !vadSwitch.isChecked
+            prefs().edit().putBoolean(LocalTranscriber.VAD_PREF, newVal).apply()
+            vadSwitch.isChecked = newVal
+            DictationEngine.reloadModel()
+        })
         root.addView(modelContainer)
 
         // --- Post-Processing Section ---
