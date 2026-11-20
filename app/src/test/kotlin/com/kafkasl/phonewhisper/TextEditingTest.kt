@@ -193,13 +193,13 @@ class PcmConverterTest {
 }
 
 class MicButtonsTest {
-    @Test fun `push-to-talk needs a streaming model`() {
-        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(MicButtons.BOTH, streaming = true))
-        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.BOTH, streaming = false))
-        assertEquals(MicButtons.Visible(tap = false, ptt = true), MicButtons.visible(MicButtons.PTT, streaming = true))
-        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.PTT, streaming = false))
-        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.TAP, streaming = true))
-        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(null, streaming = true))
+    @Test fun `push-to-talk needs a local model`() {
+        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(MicButtons.BOTH, pttAvailable = true))
+        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.BOTH, pttAvailable = false))
+        assertEquals(MicButtons.Visible(tap = false, ptt = true), MicButtons.visible(MicButtons.PTT, pttAvailable = true))
+        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.PTT, pttAvailable = false))
+        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.TAP, pttAvailable = true))
+        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(null, pttAvailable = true))
     }
 }
 

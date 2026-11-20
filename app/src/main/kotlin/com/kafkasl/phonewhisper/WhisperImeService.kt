@@ -162,7 +162,9 @@ class WhisperImeService : InputMethodService() {
         super.onStartInputView(info, restarting)
         ImeLog.add("onStartInputView restarting=$restarting")
         // Warm the local model while the keyboard is visible; it is freed after idling.
-        DictationEngine.ensureModelLoaded()
+        // Warm the models of the visible mics (tap and, if shown, push-to-talk).
+        if (pttVisible()) DictationEngine.ensureModelLoaded(DictationEngine.Role.TAP, DictationEngine.Role.PTT)
+        else DictationEngine.ensureModelLoaded(DictationEngine.Role.TAP)
         DictationEngine.scheduleModelRelease()
         applyMicButtons()
         renderMic(ownerState())
@@ -365,7 +367,8 @@ class WhisperImeService : InputMethodService() {
         notice = null
         replaceTarget = target
         // Live typing only for normal dictation; a re-dictated word is replaced in one go.
-        when (DictationEngine.start(listener, cleanup = target == null, live = target == null)) {
+        val role = if (pttActive && target == null) DictationEngine.Role.PTT else DictationEngine.Role.TAP
+        when (DictationEngine.start(listener, cleanup = target == null, live = target == null, role = role)) {
             DictationEngine.StartResult.STARTED -> {
                 liveActive = DictationEngine.isLive
                 if (liveActive) {
@@ -836,10 +839,16 @@ class WhisperImeService : InputMethodService() {
 
     // --- Rendering ---
 
-    /** Show the tap mic and/or push-to-talk button according to settings and the model. */
-    private fun applyMicButtons() {
+    private fun micButtonsVisible(): MicButtons.Visible {
         val mode = getSharedPreferences("phonewhisper", MODE_PRIVATE).getString(MicButtons.PREF, MicButtons.DEFAULT)
-        val visible = MicButtons.visible(mode, LocalTranscriber.isStreamingInUse(this))
+        return MicButtons.visible(mode, LocalTranscriber.isPushToTalkAvailable(this))
+    }
+
+    private fun pttVisible() = micButtonsVisible().ptt
+
+    /** Show the tap mic and/or push-to-talk button according to settings and the models. */
+    private fun applyMicButtons() {
+        val visible = micButtonsVisible()
         micCircle?.visibility = if (visible.tap) View.VISIBLE else View.GONE
         pttCircle?.visibility = if (visible.ptt) View.VISIBLE else View.GONE
     }

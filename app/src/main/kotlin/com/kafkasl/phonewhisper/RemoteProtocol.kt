@@ -14,14 +14,14 @@ package com.kafkasl.phonewhisper
  * runtime) and a `<queries>` entry for ACTION_BIND.
  */
 object RemoteProtocol {
-    const val VERSION = 1
+    const val VERSION = 2
     const val ACTION_BIND = "com.kafkasl.phonewhisper.action.BIND_DICTATION"
     const val PERMISSION = "com.kafkasl.phonewhisper.permission.DICTATION"
 
     // --- Client → engine ---
     /** Keyboard became visible: warm up the local model. */
     const val MSG_PREPARE = 1
-    /** Start an utterance. Bundle: KEY_LIVE, KEY_CLEANUP. Answer: MSG_STARTED or MSG_ERROR. */
+    /** Start an utterance. Bundle: KEY_LIVE, KEY_CLEANUP, KEY_ROLE. Answer: MSG_STARTED or MSG_ERROR. */
     const val MSG_START = 2
     /** Audio chunk. Bundle: KEY_PCM (ByteArray). */
     const val MSG_AUDIO = 3
@@ -55,7 +55,7 @@ object RemoteProtocol {
     const val MSG_CLEANED = 107
     /** Bundle: KEY_ID, KEY_LIST (String array) or KEY_TEXT (error); KEY_ERROR_CODE "no_key" without a key. */
     const val MSG_VARIANTS_RESULT = 108
-    /** Bundle: KEY_VERSION, KEY_STREAMING, KEY_MIC_BUTTONS, KEY_CLEANUP. */
+    /** Bundle: KEY_VERSION, KEY_STREAMING (push-to-talk available), KEY_MIC_BUTTONS, KEY_CLEANUP. */
     const val MSG_INFO_RESULT = 109
 
     const val KEY_LIVE = "live"
@@ -72,6 +72,10 @@ object RemoteProtocol {
     const val KEY_VERSION = "version"
     const val KEY_STREAMING = "streaming"
     const val KEY_MIC_BUTTONS = "mic_buttons"
+    /** Which mic: ROLE_TAP (its own model choice) or ROLE_PTT (streaming / pseudo-streaming model). */
+    const val KEY_ROLE = "role"
+    const val ROLE_TAP = "tap"
+    const val ROLE_PTT = "ptt"
 
     const val ERROR_BUSY = "busy"
     const val ERROR_NO_KEY = "no_key"

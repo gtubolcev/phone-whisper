@@ -64,21 +64,26 @@ object DictationEngine {
 
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
-    @Volatile private var streamSession: LocalTranscriber.StreamingSession? = null
+    @Volatile private var streamSession: LocalTranscriber.LiveSession? = null
+
+    /** Which mic started the utterance: the tap mic and push-to-talk can use different models. */
+    enum class Role { TAP, PTT }
 
     private val modelLock = Any()
-    @Volatile private var localTranscriber: LocalTranscriber? = null
-    @Volatile private var isModelLoading = false
+    /** Loaded local models by directory name; tap and push-to-talk models can both be in memory. */
+    private val transcribers = HashMap<String, LocalTranscriber>()
+    private val loading = HashSet<String>()
+    /** Local model of the current utterance; null with cloud transcription. */
+    @Volatile private var currentModel: String? = null
+    @Volatile private var currentUseLocal = true
 
     private val releaseModelRunnable = Runnable {
         if (state != State.IDLE) { scheduleModelRelease(); return@Runnable }
         thread {
             synchronized(modelLock) {
-                localTranscriber?.let {
-                    Log.i(TAG, "Releasing local transcriber model due to inactivity")
-                    it.release()
-                    localTranscriber = null
-                }
+                if (transcribers.isNotEmpty()) Log.i(TAG, "Releasing ${transcribers.keys} due to inactivity")
+                transcribers.values.forEach { it.release() }
+                transcribers.clear()
             }
         }
     }
@@ -95,21 +100,33 @@ object DictationEngine {
 
     // --- Model lifecycle ---
 
-    /** Load the local model in the background (if needed) and arm the idle-release timer. */
+    /** Whether a mic transcribes locally (the tap mic follows the cloud switch; push-to-talk is always local). */
+    private fun usesLocal(role: Role) = role == Role.PTT || prefs().getBoolean("use_local", true)
+
+    /** Local model a mic uses, or null for cloud transcription or when none is installed. */
+    fun modelFor(role: Role): String? = when {
+        !usesLocal(role) -> null
+        role == Role.TAP -> LocalTranscriber.tapModel(ctx())
+        else -> LocalTranscriber.pttModel(ctx())
+    }
+
+    /** Load the tap mic's model in the background (if needed) and arm the idle-release timer. */
     fun preloadModel() {
         thread {
-            initLocalModel()
+            load(modelFor(Role.TAP))
             scheduleModelRelease()
         }
     }
 
-    /** Load the local model if cloud transcription is not selected, and keep it loaded. */
-    fun ensureModelLoaded() {
+    /** Load the models of the given mics in the background and keep them loaded. */
+    fun ensureModelLoaded(vararg roles: Role = arrayOf(Role.TAP)) {
         handler.removeCallbacks(releaseModelRunnable)
-        if (!prefs().getBoolean("use_local", true)) return
-        if (localTranscriber == null) {
-            Log.i(TAG, "Pre-loading model...")
-            thread { initLocalModel() }
+        for (role in roles) {
+            val name = modelFor(role) ?: continue
+            if (!isLoadedOrLoading(name)) {
+                Log.i(TAG, "Pre-loading $name for $role")
+                thread { load(name) }
+            }
         }
     }
 
@@ -118,48 +135,40 @@ object DictationEngine {
         handler.postDelayed(releaseModelRunnable, MODEL_IDLE_RELEASE_MS)
     }
 
-    /** Reload after the selected model or decoding settings change. Lazy if nothing is loaded. */
+    /** Reload after the selected models or decoding settings change. Lazy if nothing is loaded. */
     fun reloadModel() {
         if (appContext == null) return
-        val wasLoaded = synchronized(modelLock) { localTranscriber != null || isModelLoading }
-        if (!wasLoaded) return
+        val any = synchronized(modelLock) { transcribers.isNotEmpty() || loading.isNotEmpty() }
+        if (!any) return
         thread {
             synchronized(modelLock) {
-                localTranscriber?.let {
-                    Log.i(TAG, "Releasing old model for reload")
-                    it.release()
-                    localTranscriber = null
-                }
+                Log.i(TAG, "Releasing ${transcribers.keys} for reload")
+                transcribers.values.forEach { it.release() }
+                transcribers.clear()
             }
-            initLocalModel()
+            load(modelFor(Role.TAP)) // push-to-talk's model loads again when the keyboard asks for it
             scheduleModelRelease()
         }
     }
 
-    private fun initLocalModel() {
+    private fun isLoadedOrLoading(name: String) = synchronized(modelLock) { name in transcribers || name in loading }
+    private fun isLoading(name: String) = synchronized(modelLock) { name in loading }
+    private fun loaded(name: String?): LocalTranscriber? = name?.let { synchronized(modelLock) { transcribers[it] } }
+
+    private fun load(name: String?) {
+        if (name == null) return
         synchronized(modelLock) {
-            if (localTranscriber != null) return
-            if (isModelLoading) return
-            isModelLoading = true
+            if (name in transcribers || name in loading) return
+            loading += name
         }
         try {
-            val context = ctx()
-            val modelName = prefs().getString("model_name", "") ?: ""
-            val transcriber = if (modelName.isBlank() || !isLocalModelInstalled(context, modelName)) {
-                val models = LocalTranscriber.availableModels(context)
-                if (models.isNotEmpty()) {
-                    Log.i(TAG, "Auto-detected model: ${models.first()}")
-                    LocalTranscriber.create(context, models.first())
-                } else null
-            } else {
-                LocalTranscriber.create(context, modelName)
-            }
-            synchronized(modelLock) {
-                localTranscriber = transcriber
-                Log.i(TAG, if (transcriber != null) "Local transcription ready" else "No local model found, will use API")
-            }
+            val t0 = System.currentTimeMillis()
+            val transcriber = LocalTranscriber.create(ctx(), name)
+            synchronized(modelLock) { if (transcriber != null) transcribers[name] = transcriber }
+            Log.i(TAG, if (transcriber != null) "Model ready: $name in ${System.currentTimeMillis() - t0}ms" else "Model failed: $name")
+            ImeLog.add(if (transcriber != null) "model loaded: $name (${System.currentTimeMillis() - t0} ms)" else "model failed: $name")
         } finally {
-            synchronized(modelLock) { isModelLoading = false }
+            synchronized(modelLock) { loading -= name }
         }
     }
 
@@ -169,11 +178,10 @@ object DictationEngine {
      * Start capturing for [owner]. With [cleanup] false the transcript skips post-processing
      * (used when re-dictating a single word).
      */
-    fun start(owner: Listener, cleanup: Boolean = true, live: Boolean = false): StartResult {
+    fun start(owner: Listener, cleanup: Boolean = true, live: Boolean = false, role: Role = Role.TAP): StartResult {
         if (state != State.IDLE) return StartResult.BUSY
         val context = ctx()
-        val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal) ensureModelLoaded()
+        ensureModelLoaded(role)
 
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             return StartResult.NO_PERMISSION
@@ -205,7 +213,7 @@ object DictationEngine {
             return StartResult.MIC_ERROR
         }
 
-        val gen = begin(owner, cleanup, live, useLocal, record)
+        val gen = begin(owner, cleanup, live, role, record)
 
         thread {
             val buf = ByteArray(bufSize)
@@ -227,11 +235,10 @@ object DictationEngine {
      * itself, since a background app may not use the microphone). Feed 16 kHz mono 16-bit
      * little-endian PCM with [feedExternal], then [stopAndTranscribe] as usual.
      */
-    fun startExternal(owner: Listener, cleanup: Boolean = true, live: Boolean = false): StartResult {
+    fun startExternal(owner: Listener, cleanup: Boolean = true, live: Boolean = false, role: Role = Role.TAP): StartResult {
         if (state != State.IDLE) return StartResult.BUSY
-        val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal) ensureModelLoaded()
-        begin(owner, cleanup, live, useLocal, null)
+        ensureModelLoaded(role)
+        begin(owner, cleanup, live, role, null)
         return StartResult.STARTED
     }
 
@@ -242,20 +249,30 @@ object DictationEngine {
         streamSession?.accept(PcmConverter.toFloatSamples(pcm, pcm.size))
     }
 
-    private fun begin(owner: Listener, cleanup: Boolean, live: Boolean, useLocal: Boolean, record: AudioRecord?): Int {
+    private fun begin(owner: Listener, cleanup: Boolean, live: Boolean, role: Role, record: AudioRecord?): Int {
+        val useLocal = usesLocal(role)
+        val model = modelFor(role)
+        currentUseLocal = useLocal
+        currentModel = model
+        ImeLog.add("dictation start: $role ${if (useLocal) model ?: "(no local model)" else "cloud"}")
         val gen = ++generation
         listener = owner
         audioRecord = record
         pcmStream = ByteArrayOutputStream()
         // If a streaming model is already loaded, decode incrementally while recording so
         // the result is ready almost instantly on stop. Otherwise fall back to one-shot.
-        val local = localTranscriber
-        val streaming = useLocal && local != null && local.isStreaming
-        isLive = live && streaming
+        val local = if (useLocal) loaded(model) else null
+        // Streaming models decode while recording (live if asked). Offline models go live
+        // phrase by phrase only for push-to-talk; the tap mic transcribes them in one piece.
+        val session: LocalTranscriber.LiveSession? = when {
+            local == null -> null
+            local.isStreaming -> local.newStreamingSession(SAMPLE_RATE, if (live) liveUpdates(gen) else null)
+            live && role == Role.PTT -> local.newSegmentedSession(SAMPLE_RATE, liveUpdates(gen))
+            else -> null
+        }
+        isLive = live && session != null
         allowCleanup = cleanup && !isLive
-        streamSession = if (streaming) local!!.newStreamingSession(
-            SAMPLE_RATE, if (isLive) liveUpdates(gen) else null
-        ) else null
+        streamSession = session
 
         state = State.RECORDING
         owner.onStateChanged(State.RECORDING)
@@ -293,20 +310,22 @@ object DictationEngine {
 
         if (pcm.isEmpty()) { session?.abandon(); fail(gen, "No audio captured"); return }
 
-        val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal && session != null) {
+        val model = currentModel
+        if (currentUseLocal && session != null) {
             finishStreaming(gen, session)
-        } else if (useLocal) {
+        } else if (currentUseLocal) {
+            if (model == null) { fail(gen, "No local model installed. Download one in the Phone Whisper app."); return }
             thread {
                 var attempts = 0
-                // Wait up to 10 seconds for the local model if it is still loading.
-                while (localTranscriber == null && isModelLoading && attempts < 100) {
+                // Wait up to 30 seconds for the model if it is still loading (large models take a while).
+                while (loaded(model) == null && isLoading(model) && attempts < 300) {
                     Thread.sleep(100)
                     attempts++
                 }
-                val local = localTranscriber
+                if (loaded(model) == null && !isLoading(model)) load(model)
+                val local = loaded(model)
                 if (local != null) transcribeLocal(gen, pcm, local)
-                else fail(gen, "Local model not loaded yet. Please try again.")
+                else fail(gen, "Model $model could not be loaded. Please try again.")
             }
         } else {
             transcribeApi(gen, pcm)
@@ -344,7 +363,7 @@ object DictationEngine {
 
     // --- Transcription ---
 
-    private fun finishStreaming(gen: Int, session: LocalTranscriber.StreamingSession) {
+    private fun finishStreaming(gen: Int, session: LocalTranscriber.LiveSession) {
         thread {
             try {
                 val t0 = System.currentTimeMillis()

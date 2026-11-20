@@ -94,8 +94,8 @@ val MODEL_CATALOG = listOf(
         100, "★★★ Best value", recommended = false),
     Model("Whisper Base", "sherpa-onnx-whisper-base.en",
         199, "★★★"),
-    Model("Parakeet 0.6B", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
-        465, "★★★★ Best quality"),
+    Model("Parakeet 0.6B v3 (25 languages, incl. Russian)", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+        465, "★★★★ Multilingual, punctuation"),
     Model("Moonshine Tiny", "sherpa-onnx-moonshine-tiny-en-int8",
         103, "★★☆ Fast"),
 )

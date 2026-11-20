@@ -29,6 +29,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var accRowSub: TextView
     private lateinit var imeRowSub: TextView
     private lateinit var micButtonsRowSub: TextView
+    private lateinit var tapModelRowSub: TextView
+    private lateinit var pttModelRowSub: TextView
     private lateinit var cloudConfigContainer: LinearLayout
     private lateinit var cleanupConfigContainer: LinearLayout
     private lateinit var transcriptionKeyRowSub: TextView
@@ -99,6 +101,14 @@ class MainActivity : AppCompatActivity() {
         val micButtonsRow = settingsRow("Keyboard mic buttons", "Checking...") { promptMicButtons() }
         micButtonsRowSub = micButtonsRow.findViewWithTag("subtitle")
         root.addView(micButtonsRow)
+
+        val tapModelRow = settingsRow("Tap mic model (blue)", "Checking...") { promptTapModel() }
+        tapModelRowSub = tapModelRow.findViewWithTag("subtitle")
+        root.addView(tapModelRow)
+
+        val pttModelRow = settingsRow("Push-to-talk model (teal)", "Checking...") { promptPttModel() }
+        pttModelRowSub = pttModelRow.findViewWithTag("subtitle")
+        root.addView(pttModelRow)
 
         root.addView(settingsRow("Keyboard diagnostics log", "Events of the voice keyboard, to copy into a bug report") {
             showImeLog()
@@ -419,8 +429,21 @@ class MainActivity : AppCompatActivity() {
         val ime = isImeEnabled()
         val micMode = prefs().getString(MicButtons.PREF, MicButtons.DEFAULT)
         micButtonsRowSub.text = MicButtons.label(micMode) +
-            if (micMode != MicButtons.TAP && !LocalTranscriber.isStreamingInUse(this))
-                " — push-to-talk appears with a streaming local model" else ""
+            if (micMode != MicButtons.TAP && !LocalTranscriber.isPushToTalkAvailable(this))
+                " — push-to-talk appears once a local model is installed" else ""
+        tapModelRowSub.text = when {
+            !useLocal -> "Cloud transcription (main setting)"
+            else -> {
+                val chosen = prefs().getString(LocalTranscriber.TAP_MODEL_PREF, "") ?: ""
+                val model = LocalTranscriber.tapModel(this)
+                when {
+                    model == null -> "No local model installed"
+                    chosen.isBlank() || chosen != model -> "Same as main: ${LocalTranscriber.displayName(model)}"
+                    else -> LocalTranscriber.displayName(model)
+                }
+            }
+        }
+        pttModelRowSub.text = LocalTranscriber.pttModel(this)?.let { modelWithMode(it) } ?: "No local model installed"
         accRowSub.text = if (acc) "Enabled" else "Optional — tap to enable in settings"
         imeRowSub.text = if (ime) "Enabled — tap to switch keyboards" else "Tap to enable in keyboard settings"
 
@@ -492,6 +515,46 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Close", null)
             .show()
         scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /** "Name — streaming" or "Name — pseudo-streaming (by pauses)". */
+    private fun modelWithMode(name: String): String =
+        LocalTranscriber.displayName(name) +
+            if (LocalTranscriber.isStreamingModel(this, name)) " — streaming" else " — pseudo-streaming (by pauses)"
+
+    private fun promptTapModel() {
+        val models = LocalTranscriber.availableModels(this)
+        val labels = listOf("Same as main selection") + models.map { LocalTranscriber.displayName(it) }
+        val values = listOf("") + models
+        val current = values.indexOf(prefs().getString(LocalTranscriber.TAP_MODEL_PREF, "") ?: "").coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Tap mic model (blue)")
+            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
+                prefs().edit().putString(LocalTranscriber.TAP_MODEL_PREF, values[which]).apply()
+                DictationEngine.reloadModel()
+                dialog.dismiss()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptPttModel() {
+        val models = LocalTranscriber.availableModels(this)
+            .sortedBy { if (LocalTranscriber.isStreamingModel(this, it)) 0 else 1 }
+        val labels = listOf("Automatic (a streaming model if installed)") + models.map { modelWithMode(it) }
+        val values = listOf("") + models
+        val current = values.indexOf(prefs().getString(LocalTranscriber.PTT_MODEL_PREF, "") ?: "").coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Push-to-talk model (teal)")
+            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
+                prefs().edit().putString(LocalTranscriber.PTT_MODEL_PREF, values[which]).apply()
+                DictationEngine.reloadModel()
+                dialog.dismiss()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun promptMicButtons() {

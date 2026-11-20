@@ -43,7 +43,7 @@ class RemoteDictationService : Service() {
             val data = msg.data ?: Bundle.EMPTY
             when (msg.what) {
                 P.MSG_PREPARE -> {
-                    DictationEngine.ensureModelLoaded()
+                    DictationEngine.ensureModelLoaded(DictationEngine.Role.TAP, DictationEngine.Role.PTT)
                     DictationEngine.scheduleModelRelease()
                 }
                 P.MSG_START -> {
@@ -51,6 +51,7 @@ class RemoteDictationService : Service() {
                         listener,
                         cleanup = data.getBoolean(P.KEY_CLEANUP, true),
                         live = data.getBoolean(P.KEY_LIVE, false),
+                        role = if (data.getString(P.KEY_ROLE) == P.ROLE_PTT) DictationEngine.Role.PTT else DictationEngine.Role.TAP,
                     )
                     if (result == DictationEngine.StartResult.STARTED) {
                         send(P.MSG_STARTED) { putBoolean(P.KEY_LIVE, DictationEngine.isLive) }
@@ -101,7 +102,7 @@ class RemoteDictationService : Service() {
                 P.MSG_INFO -> send(P.MSG_INFO_RESULT, msg.replyTo) {
                     val prefs = getSharedPreferences("phonewhisper", MODE_PRIVATE)
                     putInt(P.KEY_VERSION, P.VERSION)
-                    putBoolean(P.KEY_STREAMING, LocalTranscriber.isStreamingInUse(this@RemoteDictationService))
+                    putBoolean(P.KEY_STREAMING, LocalTranscriber.isPushToTalkAvailable(this@RemoteDictationService))
                     putString(P.KEY_MIC_BUTTONS, prefs.getString(MicButtons.PREF, MicButtons.DEFAULT))
                     putBoolean(P.KEY_CLEANUP, DictationEngine.isCleanupEnabled())
                 }

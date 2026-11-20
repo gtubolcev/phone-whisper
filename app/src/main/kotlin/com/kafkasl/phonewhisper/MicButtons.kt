@@ -11,13 +11,13 @@ object MicButtons {
     data class Visible(val tap: Boolean, val ptt: Boolean)
 
     /**
-     * Push-to-talk is offered only with a streaming model. If it is the only button
+     * Push-to-talk needs a local model (streaming, or offline used phrase by phrase). If it is the only button
      * configured but unavailable, fall back to the tap button so a mic is always shown.
      */
-    fun visible(mode: String?, streaming: Boolean): Visible = when (mode) {
+    fun visible(mode: String?, pttAvailable: Boolean): Visible = when (mode) {
         TAP -> Visible(tap = true, ptt = false)
-        PTT -> if (streaming) Visible(tap = false, ptt = true) else Visible(tap = true, ptt = false)
-        else -> Visible(tap = true, ptt = streaming)
+        PTT -> if (pttAvailable) Visible(tap = false, ptt = true) else Visible(tap = true, ptt = false)
+        else -> Visible(tap = true, ptt = pttAvailable)
     }
 
     fun label(mode: String?): String = when (mode) {
