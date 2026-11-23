@@ -254,10 +254,13 @@ object DictationEngine {
      * itself, since a background app may not use the microphone). Feed 16 kHz mono 16-bit
      * little-endian PCM with [feedExternal], then [stopAndTranscribe] as usual.
      */
-    fun startExternal(owner: Listener, cleanup: Boolean = true, live: Boolean = false, role: Role = Role.TAP): StartResult {
+    fun startExternal(
+        owner: Listener, cleanup: Boolean = true, live: Boolean = false,
+        role: Role = Role.TAP, model: String? = null,
+    ): StartResult {
         if (state != State.IDLE) return StartResult.BUSY
-        ensureModelLoaded(role)
-        begin(owner, cleanup, live, role, null, null)
+        if (model != null) ensureLoaded(model) else ensureModelLoaded(role)
+        begin(owner, cleanup, live, role, model, null)
         return StartResult.STARTED
     }
 

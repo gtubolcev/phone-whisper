@@ -63,6 +63,21 @@
             </intent-filter>
         </activity>
 
+        <!-- SpeechRecognizer API for apps (no window); records on behalf of the calling app -->
+        <service
+            android:name=".WhisperRecognitionService"
+            android:exported="true"
+            android:label="@string/popup_label"
+            android:permission="android.permission.RECORD_AUDIO">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
+
         <service
             android:name=".RemoteDictationService"
             android:exported="true"

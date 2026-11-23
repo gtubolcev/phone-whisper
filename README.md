@@ -44,6 +44,11 @@ Its model and mode come from one of your voice buttons (*Voice input for other a
 Keyboards with a mic key for a voice IME (HeliBoard, FlorisBoard) open the Phone Whisper voice
 keyboard instead.
 
+Apps using the **SpeechRecognizer API** (no window) can use Phone Whisper too: pick it as the
+system speech recognition service (Android settings → System → Languages → Voice input /
+Speech recognition, depending on the device). It sends partial results while you speak, ends
+after a pause, and opens the microphone on behalf of the calling app.
+
 ## Install
 
 Use the side-by-side debug build from [Releases](https://github.com/ivkiwi/phone-whisper/releases/tag/openai-compatible-providers-side-by-side-2026-06-29).
