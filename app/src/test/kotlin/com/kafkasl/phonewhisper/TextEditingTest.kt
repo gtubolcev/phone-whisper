@@ -192,14 +192,23 @@ class PcmConverterTest {
     }
 }
 
-class MicButtonsTest {
-    @Test fun `push-to-talk needs a local model`() {
-        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(MicButtons.BOTH, pttAvailable = true))
-        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.BOTH, pttAvailable = false))
-        assertEquals(MicButtons.Visible(tap = false, ptt = true), MicButtons.visible(MicButtons.PTT, pttAvailable = true))
-        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.PTT, pttAvailable = false))
-        assertEquals(MicButtons.Visible(tap = true, ptt = false), MicButtons.visible(MicButtons.TAP, pttAvailable = true))
-        assertEquals(MicButtons.Visible(tap = true, ptt = true), MicButtons.visible(null, pttAvailable = true))
+class VoiceButtonsTest {
+    @Test fun `buttons survive a save and load`() {
+        val list = listOf(
+            VoiceButton("tap", 0xFF2563EB.toInt(), pushToTalk = false),
+            VoiceButton("b3", 0xFF7C3AED.toInt(), pushToTalk = true, model = "sherpa-onnx-sense-voice-zh"),
+        )
+        assertEquals(list, VoiceButtons.parse(VoiceButtons.serialize(list)))
+    }
+
+    @Test fun `broken or empty settings fall back`() {
+        assertEquals(null, VoiceButtons.parse("not json"))
+        assertEquals(null, VoiceButtons.parse("[]"))
+    }
+
+    @Test fun `new ids do not clash`() {
+        assertEquals("b3", VoiceButtons.newId(VoiceButtons.defaults()))
+        assertEquals("b4", VoiceButtons.newId(VoiceButtons.defaults() + VoiceButton("b3", 0, false)))
     }
 }
 

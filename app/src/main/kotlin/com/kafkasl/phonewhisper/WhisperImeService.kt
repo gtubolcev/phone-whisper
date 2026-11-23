@@ -41,12 +41,12 @@ class WhisperImeService : InputMethodService() {
     // --- Views ---
     private var stripScroll: HorizontalScrollView? = null
     private var stripRow: LinearLayout? = null
-    private var micCircle: FrameLayout? = null
-    private var micIcon: ImageView? = null
-    private var pttCircle: FrameLayout? = null
-    private var pttIcon: ImageView? = null
-    /** The current recording was started by holding the push-to-talk button. */
-    private var pttActive = false
+    /** Container of the voice buttons (between the word-left / word-right keys). */
+    private var micWrap: LinearLayout? = null
+    private var voiceButtons: List<VoiceButton> = emptyList()
+    private val buttonViews = LinkedHashMap<String, Pair<FrameLayout, ImageView>>()
+    /** Button that started the current utterance. */
+    private var activeButton: VoiceButton? = null
 
     // --- Editor state ---
     private var selStart = -1
@@ -100,21 +100,19 @@ class WhisperImeService : InputMethodService() {
     private val hintText get() = if (night) 0xFF9AA0A6.toInt() else 0xFF5A6472.toInt()
     private val accent get() = if (night) 0xFF8AB4F8.toInt() else 0xFF1A56DB.toInt()
     private val chipAccentBg get() = if (night) 0xFF1E3A5F.toInt() else 0xFFDCE7FD.toInt()
-    private val micIdle = 0xFF2563EB.toInt()
-    private val pttIdle = 0xFF0D9488.toInt()
     private val micRec = 0xFFEF4444.toInt()
     private val micBusy = 0xFF8A9099.toInt()
 
     private val listener = object : DictationEngine.Listener {
         override fun onStateChanged(state: DictationEngine.State) {
-            if (state == DictationEngine.State.IDLE) pttActive = false
+            if (state == DictationEngine.State.IDLE) activeButton = null
             renderMic(state)
             renderStrip()
         }
 
         override fun onLevel(level: Float) {
             val s = 1f + level * 0.18f
-            val active = if (pttActive) pttCircle else micCircle
+            val active = activeButton?.let { buttonViews[it.id]?.first }
             active?.scaleX = s
             active?.scaleY = s
         }
@@ -161,12 +159,10 @@ class WhisperImeService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         ImeLog.add("onStartInputView restarting=$restarting")
-        // Warm the local model while the keyboard is visible; it is freed after idling.
-        // Warm the models of the visible mics (tap and, if shown, push-to-talk).
-        if (pttVisible()) DictationEngine.ensureModelLoaded(DictationEngine.Role.TAP, DictationEngine.Role.PTT)
-        else DictationEngine.ensureModelLoaded(DictationEngine.Role.TAP)
+        // Warm the voice buttons' models while the keyboard is visible; they are freed after idling.
+        rebuildMicButtons() // settings may have changed
+        for (b in voiceButtons) VoiceButtons.resolveModel(this, b)?.let { DictationEngine.ensureLoaded(it) }
         DictationEngine.scheduleModelRelease()
-        applyMicButtons()
         renderMic(ownerState())
         renderStrip()
     }
@@ -293,21 +289,12 @@ class WhisperImeService : InputMethodService() {
         stripScroll = scroll
         root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
 
-        // Mic row: word-left · tap mic and/or push-to-talk · word-right
-        val (circle, icon) = micButton(micIdle, R.string.ime_mic)
-        circle.setOnClickListener { it.haptic(); onMicTap() }
-        micIcon = icon
-        micCircle = circle
-        val (ptt, pIcon) = micButton(pttIdle, R.string.ime_ptt)
-        ptt.pushToTalk()
-        pttIcon = pIcon
-        pttCircle = ptt
+        // Mic row: word-left · the voice buttons (each with its own colour, mode and model) · word-right
         val micWrap = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            addView(circle, LinearLayout.LayoutParams(dp(68), dp(68)).apply { setMargins(dp(6), 0, dp(6), 0) })
-            addView(ptt, LinearLayout.LayoutParams(dp(68), dp(68)).apply { setMargins(dp(6), 0, dp(6), 0) })
         }
+        this.micWrap = micWrap
         val micRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -343,7 +330,7 @@ class WhisperImeService : InputMethodService() {
         }
         root.addView(bottomRow)
 
-        applyMicButtons()
+        rebuildMicButtons()
         renderMic(ownerState())
         renderStrip()
         return root
@@ -354,21 +341,40 @@ class WhisperImeService : InputMethodService() {
     private fun ownerState(): DictationEngine.State =
         if (DictationEngine.isOwner(listener)) DictationEngine.state else DictationEngine.State.IDLE
 
-    private fun onMicTap() {
+    private fun onMicTap(b: VoiceButton) {
         when (ownerState()) {
-            DictationEngine.State.IDLE -> startDictation(null)
+            DictationEngine.State.IDLE -> startVoice(b)
             DictationEngine.State.RECORDING -> DictationEngine.stopAndTranscribe()
             DictationEngine.State.TRANSCRIBING -> {}
         }
     }
 
-    /** Start dictating; with [target] the result replaces that word of the last phrase. */
-    private fun startDictation(target: WordTarget?): Boolean {
+    /** Start dictating with a voice button, or explain what is missing and open the settings. */
+    private fun startVoice(b: VoiceButton): Boolean {
+        if (!VoiceButtons.isReady(this, b)) {
+            showNotice(getString(R.string.ime_needs_model))
+            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return false
+        }
+        activeButton = b
+        if (!startDictation(null, b)) {
+            activeButton = null
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Start dictating; with [target] the result replaces that word of the last phrase.
+     * [button] picks the model and mode (push-to-talk makes offline models pseudo-stream).
+     */
+    private fun startDictation(target: WordTarget?, button: VoiceButton? = null): Boolean {
         notice = null
         replaceTarget = target
         // Live typing only for normal dictation; a re-dictated word is replaced in one go.
-        val role = if (pttActive && target == null) DictationEngine.Role.PTT else DictationEngine.Role.TAP
-        when (DictationEngine.start(listener, cleanup = target == null, live = target == null, role = role)) {
+        val role = if (button?.pushToTalk == true && target == null) DictationEngine.Role.PTT else DictationEngine.Role.TAP
+        val model = button?.takeIf { it.model.isNotBlank() }?.let { VoiceButtons.resolveModel(this, it) }
+        when (DictationEngine.start(listener, cleanup = target == null, live = target == null, role = role, model = model)) {
             DictationEngine.StartResult.STARTED -> {
                 liveActive = DictationEngine.isLive
                 if (liveActive) {
@@ -839,47 +845,59 @@ class WhisperImeService : InputMethodService() {
 
     // --- Rendering ---
 
-    private fun micButtonsVisible(): MicButtons.Visible {
-        val mode = getSharedPreferences("phonewhisper", MODE_PRIVATE).getString(MicButtons.PREF, MicButtons.DEFAULT)
-        return MicButtons.visible(mode, LocalTranscriber.isPushToTalkAvailable(this))
-    }
-
-    private fun pttVisible() = micButtonsVisible().ptt
-
-    /** Show the tap mic and/or push-to-talk button according to settings and the models. */
-    private fun applyMicButtons() {
-        val visible = micButtonsVisible()
-        micCircle?.visibility = if (visible.tap) View.VISIBLE else View.GONE
-        pttCircle?.visibility = if (visible.ptt) View.VISIBLE else View.GONE
+    /** (Re)create the voice buttons from the settings: colour, mode, model, size. */
+    private fun rebuildMicButtons() {
+        val wrap = micWrap ?: return
+        wrap.removeAllViews()
+        buttonViews.clear()
+        voiceButtons = VoiceButtons.load(this)
+        val n = voiceButtons.size
+        // The default size (74 %) keeps the original 68 dp; more buttons share the row.
+        val wanted = dp(92) * VoiceButtons.sizePercent(this) / 100
+        val fit = when {
+            n <= 2 -> dp(76)
+            n == 3 -> dp(60)
+            else -> dp(48)
+        }
+        val size = minOf(wanted, fit)
+        (wrap.layoutParams as? LinearLayout.LayoutParams)?.weight = 1.4f + 0.8f * (n - 1).coerceAtLeast(0)
+        for (b in voiceButtons) {
+            val (circle, icon) = micButton(b.color, if (b.pushToTalk) R.string.ime_ptt else R.string.ime_mic, size)
+            if (b.pushToTalk) circle.pushToTalk(b) else circle.setOnClickListener { it.haptic(); onMicTap(b) }
+            wrap.addView(circle, LinearLayout.LayoutParams(size, size).apply { setMargins(dp(4), 0, dp(4), 0) })
+            buttonViews[b.id] = circle to icon
+        }
+        renderMic(ownerState())
     }
 
     private fun renderMic(state: DictationEngine.State) {
-        renderMicButton(micCircle, micIcon, micIdle, state, active = !pttActive)
-        renderMicButton(pttCircle, pttIcon, pttIdle, state, active = pttActive)
+        for (b in voiceButtons) {
+            val (circle, icon) = buttonViews[b.id] ?: continue
+            renderMicButton(circle, icon, b.color, state, active = activeButton?.id == b.id)
+        }
     }
 
-    /** The button that started the recording turns red / grey; the other one stays idle. */
-    private fun renderMicButton(circle: FrameLayout?, icon: ImageView?, idle: Int, state: DictationEngine.State, active: Boolean) {
-        circle ?: return
+    /** The button that started the recording turns red / grey; the others stay idle. */
+    private fun renderMicButton(circle: FrameLayout, icon: ImageView, idle: Int, state: DictationEngine.State, active: Boolean) {
         val color = when {
             !active || state == DictationEngine.State.IDLE -> idle
             state == DictationEngine.State.RECORDING -> micRec
             else -> micBusy
         }
         circle.background = oval(color)
-        icon?.alpha = if (active && state == DictationEngine.State.TRANSCRIBING) 0.5f else 1f
+        icon.alpha = if (active && state == DictationEngine.State.TRANSCRIBING) 0.5f else 1f
         if (!active || state != DictationEngine.State.RECORDING) {
             circle.scaleX = 1f
             circle.scaleY = 1f
         }
     }
 
-    private fun micButton(color: Int, desc: Int): Pair<FrameLayout, ImageView> {
+    private fun micButton(color: Int, desc: Int, size: Int): Pair<FrameLayout, ImageView> {
         val icon = ImageView(this).apply {
             setImageResource(R.drawable.ic_mic)
             setColorFilter(0xFFFFFFFF.toInt())
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            val p = dp(14); setPadding(p, p, p, p)
+            val p = size / 5; setPadding(p, p, p, p)
         }
         val circle = FrameLayout(this).apply {
             background = oval(color)
@@ -892,20 +910,19 @@ class WhisperImeService : InputMethodService() {
 
     /** Push-to-talk: record while held, transcribe on release. */
     @SuppressLint("ClickableViewAccessibility")
-    private fun View.pushToTalk() {
+    private fun View.pushToTalk(b: VoiceButton) {
         setOnTouchListener { v, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     v.haptic()
                     if (ownerState() == DictationEngine.State.IDLE) {
-                        pttActive = true
-                        if (!startDictation(null)) pttActive = false
+                        startVoice(b)
                         renderMic(ownerState())
                     }
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (pttActive && ownerState() == DictationEngine.State.RECORDING) {
+                    if (activeButton?.id == b.id && ownerState() == DictationEngine.State.RECORDING) {
                         v.haptic()
                         DictationEngine.stopAndTranscribe()
                     }

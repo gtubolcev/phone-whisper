@@ -33,4 +33,5 @@
     <string name="ime_ptt">Push to talk (hold)</string>
     <string name="remote_permission_label">use Phone Whisper dictation</string>
     <string name="remote_permission_description">Send microphone audio to Phone Whisper for speech recognition (on-device or with your API keys) and receive the text.</string>
+    <string name="ime_needs_model">No speech model for this button yet — download one in the app</string>
 </resources>

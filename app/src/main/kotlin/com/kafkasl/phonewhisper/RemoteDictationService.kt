@@ -103,7 +103,7 @@ class RemoteDictationService : Service() {
                     val prefs = getSharedPreferences("phonewhisper", MODE_PRIVATE)
                     putInt(P.KEY_VERSION, P.VERSION)
                     putBoolean(P.KEY_STREAMING, LocalTranscriber.isPushToTalkAvailable(this@RemoteDictationService))
-                    putString(P.KEY_MIC_BUTTONS, prefs.getString(MicButtons.PREF, MicButtons.DEFAULT))
+                    putString(P.KEY_MIC_BUTTONS, "both")
                     putBoolean(P.KEY_CLEANUP, DictationEngine.isCleanupEnabled())
                 }
             }

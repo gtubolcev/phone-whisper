@@ -151,6 +151,12 @@ object DictationEngine {
         }
     }
 
+    /** Load a specific model in the background (a voice button's own choice). */
+    fun ensureLoaded(name: String) {
+        handler.removeCallbacks(releaseModelRunnable)
+        if (!isLoadedOrLoading(name)) thread { load(name) }
+    }
+
     private fun isLoadedOrLoading(name: String) = synchronized(modelLock) { name in transcribers || name in loading }
     private fun isLoading(name: String) = synchronized(modelLock) { name in loading }
     private fun loaded(name: String?): LocalTranscriber? = name?.let { synchronized(modelLock) { transcribers[it] } }
@@ -163,7 +169,13 @@ object DictationEngine {
         }
         try {
             val t0 = System.currentTimeMillis()
-            val transcriber = LocalTranscriber.create(ctx(), name)
+            // Native libraries exist for arm64-v8a only: never let a missing one crash the keyboard.
+            val transcriber = try {
+                LocalTranscriber.create(ctx(), name)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Model $name failed to load", t)
+                null
+            }
             synchronized(modelLock) { if (transcriber != null) transcribers[name] = transcriber }
             Log.i(TAG, if (transcriber != null) "Model ready: $name in ${System.currentTimeMillis() - t0}ms" else "Model failed: $name")
             ImeLog.add(if (transcriber != null) "model loaded: $name (${System.currentTimeMillis() - t0} ms)" else "model failed: $name")
@@ -178,10 +190,17 @@ object DictationEngine {
      * Start capturing for [owner]. With [cleanup] false the transcript skips post-processing
      * (used when re-dictating a single word).
      */
-    fun start(owner: Listener, cleanup: Boolean = true, live: Boolean = false, role: Role = Role.TAP): StartResult {
+    /**
+     * [model]: a specific local model for this utterance (a voice button's own choice);
+     * null uses the model of [role]. [role] PTT makes offline models pseudo-stream.
+     */
+    fun start(
+        owner: Listener, cleanup: Boolean = true, live: Boolean = false,
+        role: Role = Role.TAP, model: String? = null,
+    ): StartResult {
         if (state != State.IDLE) return StartResult.BUSY
         val context = ctx()
-        ensureModelLoaded(role)
+        if (model != null) ensureLoaded(model) else ensureModelLoaded(role)
 
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             return StartResult.NO_PERMISSION
@@ -213,7 +232,7 @@ object DictationEngine {
             return StartResult.MIC_ERROR
         }
 
-        val gen = begin(owner, cleanup, live, role, record)
+        val gen = begin(owner, cleanup, live, role, model, record)
 
         thread {
             val buf = ByteArray(bufSize)
@@ -238,7 +257,7 @@ object DictationEngine {
     fun startExternal(owner: Listener, cleanup: Boolean = true, live: Boolean = false, role: Role = Role.TAP): StartResult {
         if (state != State.IDLE) return StartResult.BUSY
         ensureModelLoaded(role)
-        begin(owner, cleanup, live, role, null)
+        begin(owner, cleanup, live, role, null, null)
         return StartResult.STARTED
     }
 
@@ -249,9 +268,9 @@ object DictationEngine {
         streamSession?.accept(PcmConverter.toFloatSamples(pcm, pcm.size))
     }
 
-    private fun begin(owner: Listener, cleanup: Boolean, live: Boolean, role: Role, record: AudioRecord?): Int {
-        val useLocal = usesLocal(role)
-        val model = modelFor(role)
+    private fun begin(owner: Listener, cleanup: Boolean, live: Boolean, role: Role, explicitModel: String?, record: AudioRecord?): Int {
+        val useLocal = explicitModel != null || usesLocal(role)
+        val model = explicitModel ?: modelFor(role)
         currentUseLocal = useLocal
         currentModel = model
         ImeLog.add("dictation start: $role ${if (useLocal) model ?: "(no local model)" else "cloud"}")

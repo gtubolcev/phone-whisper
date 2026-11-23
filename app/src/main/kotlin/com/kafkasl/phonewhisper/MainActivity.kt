@@ -28,9 +28,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
     private lateinit var imeRowSub: TextView
-    private lateinit var micButtonsRowSub: TextView
-    private lateinit var tapModelRowSub: TextView
-    private lateinit var pttModelRowSub: TextView
+    private lateinit var buttonsContainer: LinearLayout
     private lateinit var cloudConfigContainer: LinearLayout
     private lateinit var cleanupConfigContainer: LinearLayout
     private lateinit var transcriptionKeyRowSub: TextView
@@ -98,18 +96,6 @@ class MainActivity : AppCompatActivity() {
         imeRowSub = imeRow.findViewWithTag("subtitle")
         root.addView(imeRow)
 
-        val micButtonsRow = settingsRow("Keyboard mic buttons", "Checking...") { promptMicButtons() }
-        micButtonsRowSub = micButtonsRow.findViewWithTag("subtitle")
-        root.addView(micButtonsRow)
-
-        val tapModelRow = settingsRow("Tap mic model (blue)", "Checking...") { promptTapModel() }
-        tapModelRowSub = tapModelRow.findViewWithTag("subtitle")
-        root.addView(tapModelRow)
-
-        val pttModelRow = settingsRow("Push-to-talk model (teal)", "Checking...") { promptPttModel() }
-        pttModelRowSub = pttModelRow.findViewWithTag("subtitle")
-        root.addView(pttModelRow)
-
         root.addView(settingsRow("Keyboard diagnostics log", "Events of the voice keyboard, to copy into a bug report") {
             showImeLog()
         })
@@ -119,6 +105,11 @@ class MainActivity : AppCompatActivity() {
         }
         accRowSub = accRow.findViewWithTag("subtitle")
         root.addView(accRow)
+
+        // --- Voice buttons ---
+        root.addView(sectionHeader("Voice buttons"))
+        buttonsContainer = vertical(0)
+        root.addView(buttonsContainer)
 
         // --- Engine Section ---
         
@@ -427,27 +418,10 @@ class MainActivity : AppCompatActivity() {
 
         audioRowSub.text = if (audio) "Granted" else "Tap to grant permission"
         val ime = isImeEnabled()
-        val micMode = prefs().getString(MicButtons.PREF, MicButtons.DEFAULT)
-        micButtonsRowSub.text = MicButtons.label(micMode) +
-            if (micMode != MicButtons.TAP && !LocalTranscriber.isPushToTalkAvailable(this))
-                " — push-to-talk appears once a local model is installed" else ""
-        tapModelRowSub.text = when {
-            !useLocal -> "Cloud transcription (main setting)"
-            else -> {
-                val chosen = prefs().getString(LocalTranscriber.TAP_MODEL_PREF, "") ?: ""
-                val model = LocalTranscriber.tapModel(this)
-                when {
-                    model == null -> "No local model installed"
-                    chosen.isBlank() || chosen != model -> "Same as main: ${LocalTranscriber.displayName(model)}"
-                    else -> LocalTranscriber.displayName(model)
-                }
-            }
-        }
-        pttModelRowSub.text = LocalTranscriber.pttModel(this)?.let { modelWithMode(it) } ?: "No local model installed"
         accRowSub.text = if (acc) "Enabled" else "Optional — tap to enable in settings"
         imeRowSub.text = if (ime) "Enabled — tap to switch keyboards" else "Tap to enable in keyboard settings"
 
-        modelContainer.visibility = if (useLocal) View.VISIBLE else View.GONE
+        modelContainer.visibility = View.VISIBLE // buttons can use local models even with the cloud switch on
         cloudConfigContainer.visibility = if (useLocal) View.GONE else View.VISIBLE
         cleanupConfigContainer.visibility = if (usePostProcessing) View.VISIBLE else View.GONE
         promptContainer.visibility = if (usePostProcessing) View.VISIBLE else View.GONE
@@ -491,6 +465,7 @@ class MainActivity : AppCompatActivity() {
         
         refreshAllCards()
         refreshPromptRows()
+        refreshButtons()
     }
 
     private fun showImeLog() {
@@ -517,59 +492,156 @@ class MainActivity : AppCompatActivity() {
         scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     }
 
+    // --- Voice buttons ---
+
+    private fun refreshButtons() {
+        buttonsContainer.removeAllViews()
+        val list = VoiceButtons.load(this)
+        list.forEachIndexed { i, b ->
+            val dot = View(this).apply {
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(b.color)
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
+            }
+            val title = "${VoiceButtons.colorName(b.color)} — ${if (b.pushToTalk) "hold to talk" else "tap to start / stop"}"
+            buttonsContainer.addView(settingsRow(title, buttonSummary(b), dot) { editButton(i) })
+        }
+        val size = VoiceButtons.sizePercent(this)
+        buttonsContainer.addView(settingsRow("Button size", VoiceButtons.sizeName(size)) { chooseSize() })
+        if (list.size < VoiceButtons.MAX_BUTTONS) {
+            buttonsContainer.addView(settingsRow("Add a button", "Another mic with its own colour and model, e.g. for Chinese") {
+                addButton()
+            })
+        }
+    }
+
+    private fun buttonSummary(b: VoiceButton): String {
+        val model = VoiceButtons.resolveModel(this, b)
+        return when {
+            b.model.isNotBlank() && !isLocalModelInstalled(this, b.model) ->
+                "${LocalTranscriber.displayName(b.model)} is not installed — using automatic: " +
+                    (model?.let { describe(it, b) } ?: "none")
+            model == null && b.pushToTalk -> "No local model installed — download one below"
+            model == null -> "Cloud transcription"
+            b.model.isBlank() -> "Automatic: ${describe(model, b)}"
+            else -> describe(model, b)
+        }
+    }
+
+    /** Model name plus how it runs on this button. */
+    private fun describe(model: String, b: VoiceButton): String =
+        if (b.pushToTalk) modelWithMode(model) else LocalTranscriber.displayName(model)
+
+    private fun editButton(index: Int) {
+        val list = VoiceButtons.load(this).toMutableList()
+        val b = list.getOrNull(index) ?: return
+        val actions = mutableListOf("Colour", "Mode", "Model")
+        if (list.size > 1) actions += "Remove"
+        android.app.AlertDialog.Builder(this)
+            .setTitle("${VoiceButtons.colorName(b.color)} button")
+            .setItems(actions.toTypedArray()) { _, which ->
+                when (actions[which]) {
+                    "Colour" -> chooseColor(index)
+                    "Mode" -> chooseMode(index)
+                    "Model" -> chooseButtonModel(index)
+                    "Remove" -> { list.removeAt(index); saveButtons(list) }
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun addButton() {
+        val list = VoiceButtons.load(this).toMutableList()
+        val color = VoiceButtons.PALETTE.map { it.second }.firstOrNull { c -> list.none { it.color == c } }
+            ?: VoiceButtons.PALETTE.last().second
+        list += VoiceButton(VoiceButtons.newId(list), color, pushToTalk = false)
+        saveButtons(list)
+        chooseButtonModel(list.lastIndex)
+    }
+
+    private fun saveButtons(list: List<VoiceButton>) {
+        VoiceButtons.save(this, list)
+        DictationEngine.reloadModel()
+        refresh()
+    }
+
+    private fun updateButton(index: Int, change: (VoiceButton) -> VoiceButton) {
+        val list = VoiceButtons.load(this).toMutableList()
+        if (index !in list.indices) return
+        list[index] = change(list[index])
+        saveButtons(list)
+    }
+
+    private fun chooseColor(index: Int) {
+        val current = VoiceButtons.load(this).getOrNull(index) ?: return
+        val names = VoiceButtons.PALETTE.map { it.first }
+        val checked = VoiceButtons.PALETTE.indexOfFirst { it.second == current.color }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Colour")
+            .setSingleChoiceItems(names.toTypedArray(), checked) { dialog, which ->
+                updateButton(index) { it.copy(color = VoiceButtons.PALETTE[which].second) }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun chooseMode(index: Int) {
+        val current = VoiceButtons.load(this).getOrNull(index) ?: return
+        val labels = arrayOf(
+            "Tap to start / stop — any model; text after you stop (live with a streaming model)",
+            "Hold to talk — a streaming model, or an offline model phrase by phrase",
+        )
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Mode")
+            .setSingleChoiceItems(labels, if (current.pushToTalk) 1 else 0) { dialog, which ->
+                updateButton(index) { it.copy(pushToTalk = which == 1) }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun chooseButtonModel(index: Int) {
+        val current = VoiceButtons.load(this).getOrNull(index) ?: return
+        val models = LocalTranscriber.availableModels(this)
+            .sortedBy { if (current.pushToTalk && !LocalTranscriber.isStreamingModel(this, it)) 1 else 0 }
+        val auto = if (current.pushToTalk) "Automatic (a streaming model if installed)"
+        else "Automatic (main model, or the cloud if switched on)"
+        val labels = listOf(auto) + models.map { describe(it, current) }
+        val values = listOf("") + models
+        if (models.isEmpty()) toast("Download a model below to choose it for a button")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Model for this button")
+            .setSingleChoiceItems(labels.toTypedArray(), values.indexOf(current.model).coerceAtLeast(0)) { dialog, which ->
+                updateButton(index) { it.copy(model = values[which]) }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun chooseSize() {
+        val current = VoiceButtons.sizePercent(this)
+        val labels = VoiceButtons.SIZES.map { "${it.first} — ${it.second}%" }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Button size")
+            .setSingleChoiceItems(labels.toTypedArray(), VoiceButtons.SIZES.indexOfFirst { it.second == current }) { dialog, which ->
+                VoiceButtons.setSizePercent(this, VoiceButtons.SIZES[which].second)
+                dialog.dismiss()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     /** "Name — streaming" or "Name — pseudo-streaming (by pauses)". */
     private fun modelWithMode(name: String): String =
         LocalTranscriber.displayName(name) +
             if (LocalTranscriber.isStreamingModel(this, name)) " — streaming" else " — pseudo-streaming (by pauses)"
-
-    private fun promptTapModel() {
-        val models = LocalTranscriber.availableModels(this)
-        val labels = listOf("Same as main selection") + models.map { LocalTranscriber.displayName(it) }
-        val values = listOf("") + models
-        val current = values.indexOf(prefs().getString(LocalTranscriber.TAP_MODEL_PREF, "") ?: "").coerceAtLeast(0)
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Tap mic model (blue)")
-            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
-                prefs().edit().putString(LocalTranscriber.TAP_MODEL_PREF, values[which]).apply()
-                DictationEngine.reloadModel()
-                dialog.dismiss()
-                refresh()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun promptPttModel() {
-        val models = LocalTranscriber.availableModels(this)
-            .sortedBy { if (LocalTranscriber.isStreamingModel(this, it)) 0 else 1 }
-        val labels = listOf("Automatic (a streaming model if installed)") + models.map { modelWithMode(it) }
-        val values = listOf("") + models
-        val current = values.indexOf(prefs().getString(LocalTranscriber.PTT_MODEL_PREF, "") ?: "").coerceAtLeast(0)
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Push-to-talk model (teal)")
-            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
-                prefs().edit().putString(LocalTranscriber.PTT_MODEL_PREF, values[which]).apply()
-                DictationEngine.reloadModel()
-                dialog.dismiss()
-                refresh()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun promptMicButtons() {
-        val modes = arrayOf(MicButtons.TAP, MicButtons.PTT, MicButtons.BOTH)
-        val current = modes.indexOf(prefs().getString(MicButtons.PREF, MicButtons.DEFAULT)).coerceAtLeast(0)
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Keyboard mic buttons")
-            .setSingleChoiceItems(modes.map { MicButtons.label(it) }.toTypedArray(), current) { dialog, which ->
-                prefs().edit().putString(MicButtons.PREF, modes[which]).apply()
-                dialog.dismiss()
-                refresh()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
 
     private fun promptApiKey(prefKey: String, title: String) {
         val input = EditText(this).apply {
