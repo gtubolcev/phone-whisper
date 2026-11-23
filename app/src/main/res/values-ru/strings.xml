@@ -10,7 +10,7 @@
     <string name="ime_transcribing">Распознаю…</string>
     <string name="ime_grant_mic">Разрешите доступ к микрофону и нажмите ещё раз</string>
     <string name="ime_mic_error">Микрофон недоступен</string>
-    <string name="ime_busy">Уже идёт диктовка (плавающая кнопка)</string>
+    <string name="ime_busy">Уже идёт диктовка</string>
     <string name="ime_cleanup_no_key">Для чистки нужен API-ключ — вставлен исходный текст</string>
     <string name="ime_cleanup_failed">Чистка не удалась — вставлен исходный текст</string>
     <string name="ime_text_changed">Текст изменился — фраза не найдена</string>
@@ -34,4 +34,10 @@
     <string name="remote_permission_label">использовать диктовку Phone Whisper</string>
     <string name="remote_permission_description">Передавать звук с микрофона в Phone Whisper для распознавания речи (на устройстве или с вашими API-ключами) и получать текст.</string>
     <string name="ime_needs_model">Для этой кнопки ещё нет модели — скачайте её в приложении</string>
+    <string name="popup_label">Голосовой ввод Phone Whisper</string>
+    <string name="popup_listening">Слушаю…</string>
+    <string name="popup_transcribing">Распознаю…</string>
+    <string name="popup_cleaning">Чищу текст…</string>
+    <string name="popup_hint">Говорите</string>
+    <string name="popup_done">Готово</string>
 </resources>

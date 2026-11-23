@@ -34,6 +34,16 @@ No accessibility service needed: enable **Phone Whisper voice** in Android keybo
 
 The keyboard and the floating button share one dictation engine, so the local model is loaded once.
 
+## Voice input for other apps and keyboards
+
+Like FUTO Voice Input, Phone Whisper answers Android's standard speech request
+(`android.speech.action.RECOGNIZE_SPEECH`): apps and keyboards that offer a mic through it
+(AnySoftKeyboard, the AOSP keyboard and others) get a floating window that starts listening at
+once, shows the text as you speak, stops on **Done** or after a pause, and returns the text.
+Its model and mode come from one of your voice buttons (*Voice input for other apps* in the app).
+Keyboards with a mic key for a voice IME (HeliBoard, FlorisBoard) open the Phone Whisper voice
+keyboard instead.
+
 ## Install
 
 Use the side-by-side debug build from [Releases](https://github.com/ivkiwi/phone-whisper/releases/tag/openai-compatible-providers-side-by-side-2026-06-29).

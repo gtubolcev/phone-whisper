@@ -515,6 +515,49 @@ class MainActivity : AppCompatActivity() {
                 addButton()
             })
         }
+
+        // Stand-alone voice input window for other apps and keyboards (RecognizerIntent)
+        buttonsContainer.addView(sectionHeader("Voice input for other apps"))
+        val popup = RecognizeActivity.popupButton(this)
+        buttonsContainer.addView(settingsRow(
+            "Uses the settings of",
+            "${VoiceButtons.colorName(popup.color)} button — ${buttonSummary(popup)}"
+        ) { choosePopupButton() })
+        val silence = RecognizeActivity.popupSilenceMs(this)
+        buttonsContainer.addView(settingsRow(
+            "Stop after a pause",
+            if (silence <= 0) "Off — only the Done button" else "%.1f s of silence after speech".format(silence / 1000f)
+        ) { choosePopupSilence() })
+    }
+
+    private fun choosePopupButton() {
+        val list = VoiceButtons.load(this)
+        val labels = list.map { "${VoiceButtons.colorName(it.color)} — ${buttonSummary(it)}" }
+        val current = list.indexOfFirst { it.id == RecognizeActivity.popupButton(this).id }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Voice input window uses")
+            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
+                prefs().edit().putString(RecognizeActivity.BUTTON_PREF, list[which].id).apply()
+                dialog.dismiss()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun choosePopupSilence() {
+        val values = longArrayOf(0, 1000, 1500, 2000, 3000, 5000)
+        val labels = values.map { if (it == 0L) "Off — only the Done button" else "%.1f s".format(it / 1000f) }
+        val current = values.indexOf(RecognizeActivity.popupSilenceMs(this)).coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Stop after a pause")
+            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
+                prefs().edit().putLong(RecognizeActivity.SILENCE_PREF, values[which]).apply()
+                dialog.dismiss()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun buttonSummary(b: VoiceButton): String {

@@ -50,6 +50,19 @@
                 android:resource="@xml/ime_config" />
         </service>
 
+        <!-- Stand-alone voice input for apps and keyboards (RecognizerIntent), like FUTO Voice Input -->
+        <activity
+            android:name=".RecognizeActivity"
+            android:exported="true"
+            android:label="@string/popup_label"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.PhoneWhisper.Popup">
+            <intent-filter>
+                <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".RemoteDictationService"
             android:exported="true"
